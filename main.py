@@ -7,6 +7,7 @@ from pathlib import Path
 from typing import Optional, Dict, List
 from dotenv import load_dotenv
 from telegram import Update, InputChecklist, InputChecklistTask
+from telegram.error import TelegramError
 from telegram.ext import (
     ApplicationBuilder,
     CommandHandler,
@@ -37,6 +38,8 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
+# ===== КОНСТАНТЫ =====
+MAX_TASK_LENGTH = 95  # Максимальная длина текста задачи (Telegram API для чеклистов - максимум 100, с учетом нумерации "99. " и скобок с именем)
 
 # ===== СОСТОЯНИЕ ПОЛЬЗОВАТЕЛЕЙ =====
 @dataclass
@@ -119,33 +122,70 @@ def get_today_human_date() -> str:
     return f"{day} {month}"
 
 
-def extract_task_text_from_business_message(bmsg) -> str:
+def is_system_or_service_business_message(bmsg) -> bool:
     """
-    Возвращает строку задачи.
-    - text/caption
-    - медиазаглушки
+    Определяет, является ли business_message системным / сервисным событием,
+    которое не нужно превращать в задачу:
+    - служебные нотификации чеклиста (выполнено/отменено)
+    - системные события без полезного контента
+    - сообщения от бота и автопересылки
+    """
+    # Сообщения от самого бота — никогда не считаем задачами
+    if getattr(bmsg, "from_user", None) and getattr(bmsg.from_user, "is_bot", False):
+        return True
+
+    # Автоматические пересылки / сервисные автосообщения
+    if getattr(bmsg, "is_automatic_forward", False):
+        return True
+
+    # Сервисные сообщения (если библиотека помечает их как service)
+    if getattr(bmsg, "service", False):
+        return True
+
+    # Попробуем отфильтровать специфичные события чеклиста:
+    # если библиотека выставляет отдельные поля — можно учитывать и их
+    for attr in [
+        "new_checklist_item",
+        "new_checklist_item_state",
+        "new_checklist",
+        "checklist_item_state",
+    ]:
+        if hasattr(bmsg, attr) and getattr(bmsg, attr) is not None:
+            return True
+
+    # Если нет текста/подписи и нет медиа — скорее всего это служебное событие
+    has_text_or_caption = bool(getattr(bmsg, "text", None) or getattr(bmsg, "caption", None))
+    has_media = any([
+        getattr(bmsg, "photo", None),
+        getattr(bmsg, "voice", None),
+        getattr(bmsg, "video", None),
+        getattr(bmsg, "document", None),
+        getattr(bmsg, "audio", None),
+        getattr(bmsg, "sticker", None),
+    ])
+
+    if not has_text_or_caption and not has_media:
+        return True
+
+    return False
+
+
+def extract_task_text_from_business_message(bmsg) -> Optional[str]:
+    """
+    Возвращает текст задачи или None.
+    - если нет текста/подписи — вернёт None (такие сообщения не пойдут в задачи)
+    - если есть текст/подпись — вернёт обрезанную строку (до MAX_TASK_LENGTH)
     - если сообщение пересланное — добавляет отправителя в скобках: (Имя), (@username), (Скрытый отправитель)
     """
+    raw_text = bmsg.text or bmsg.caption
+    if not raw_text:
+        return None  # медиа без текста не идут в задачи
 
-    # 1) Базовый текст
-    text = bmsg.text or bmsg.caption
-    if not text:
-        if getattr(bmsg, "photo", None):
-            text = "Фото"
-        elif getattr(bmsg, "voice", None):
-            text = "Голосовое сообщение"
-        elif getattr(bmsg, "video", None):
-            text = "Видео"
-        elif getattr(bmsg, "document", None):
-            doc = bmsg.document
-            name = getattr(doc, "file_name", None) or "Документ"
-            text = f"Файл: {name}"
-        elif getattr(bmsg, "audio", None):
-            text = "Аудиофайл"
-        elif getattr(bmsg, "sticker", None):
-            text = "Стикер"
-        else:
-            text = "Сообщение"
+    text = raw_text.strip()
+
+    # Обрезаем слишком длинные тексты
+    if len(text) > MAX_TASK_LENGTH:
+        text = text[:MAX_TASK_LENGTH].rstrip() + "…"
 
     sender = None
 
@@ -183,6 +223,12 @@ def extract_task_text_from_business_message(bmsg) -> str:
         if origin is not None:
             # type: "user" | "hidden_user" | "chat" | "channel"
             otype = getattr(origin, "type", None)
+            
+            # Дополнительное логирование для отладки
+            try:
+                logger.debug(f"origin_debug: type={otype}, origin={origin}, dir={dir(origin)}")
+            except Exception:
+                pass
 
             if otype == "user" and getattr(origin, "sender_user", None):
                 u = origin.sender_user
@@ -220,22 +266,31 @@ def extract_task_text_from_business_message(bmsg) -> str:
     # ===== ЛОГИРОВАНИЕ ДЛЯ ОТЛАДКИ =====
     # Один раз посмотреть, что вообще приходит
     try:
+        origin = getattr(bmsg, "forward_origin", None) or getattr(bmsg, "origin", None)
+        origin_type = getattr(origin, "type", None) if origin else None
+        # Детальное логирование для отладки
         logger.info(
             "forward_debug: sender=%r, "
             "forward_from=%r, forward_from_chat=%r, forward_sender_name=%r, "
-            "has_origin=%r",
+            "has_origin=%r, origin_type=%r, origin=%r",
             sender,
             getattr(bmsg, 'forward_from', None),
             getattr(bmsg, 'forward_from_chat', None),
             getattr(bmsg, 'forward_sender_name', None),
             hasattr(bmsg, 'forward_origin') or hasattr(bmsg, 'origin'),
+            origin_type,
+            origin,
         )
-    except Exception:
-        pass
+    except Exception as e:
+        logger.warning(f"⚠️ Ошибка при логировании forward_debug: {e}")
 
-    # 3) Добавляем отправителя в скобках, если нашли
+    # Добавляем отправителя в скобках, если нашли
     if sender:
-        text = f"{text} ({sender})"
+        full = f"{text} ({sender})"
+        # Обрезаем ещё раз, если после добавления sender превысили лимит
+        if len(full) > MAX_TASK_LENGTH:
+            full = full[:MAX_TASK_LENGTH].rstrip() + "…"
+        return full.strip()
 
     return text.strip()
 
@@ -248,37 +303,41 @@ async def create_checklist_for_user(
     """
     Создаёт нативный чеклист для данного пользователя, если он ещё не создан.
     - title = сегодняшняя дата (например, '29 ноября')
-    - первая задача = 'Готовность оседлать все задачи!'
+    - первая задача = 'улыбнуться себе в зеркало'
     - others_can_add_tasks = False
     - others_can_mark_tasks_as_done = True
     - сохраняет checklist_message_id, дату и список tasks в user_state
     """
-    if user_state.checklist_message_id is not None:
-        # уже есть чеклист — ничего не делаем
-        logger.info(f"⏭️ Чеклист уже существует для chat_id={chat_id}, message_id={user_state.checklist_message_id}")
-        return
-
-    logger.info(f"🔨 Начинаю создание чеклиста для chat_id={chat_id}")
-    human_date = get_today_human_date()
-    user_state.date = datetime.now().strftime("%Y-%m-%d")
-    user_state.tasks = ["Готовность оседлать все задачи!"]
-
-    tasks = [
-        InputChecklistTask(
-            id=idx,
-            text=text,
-        )
-        for idx, text in enumerate(user_state.tasks, start=1)
-    ]
-
-    checklist = InputChecklist(
-        title=human_date,
-        tasks=tasks,
-        others_can_add_tasks=False,
-        others_can_mark_tasks_as_done=True,
-    )
-
     try:
+        if user_state.checklist_message_id is not None:
+            # уже есть чеклист — ничего не делаем
+            logger.info(f"⏭️ Чеклист уже существует для chat_id={chat_id}, message_id={user_state.checklist_message_id}")
+            return
+
+        logger.info(f"🔨 Начинаю создание чеклиста для chat_id={chat_id}")
+        human_date = get_today_human_date()
+        user_state.date = datetime.now().strftime("%Y-%m-%d")
+        user_state.tasks = ["улыбнуться себе в зеркало"]
+
+        tasks = []
+        for idx, text in enumerate(user_state.tasks, start=1):
+            # Формируем текст с номером
+            numbered_text = f"{idx}. {text}"
+            # Обрезаем до 100 символов (лимит Telegram API для чеклистов)
+            if len(numbered_text) > 100:
+                numbered_text = numbered_text[:97].rstrip() + "…"
+            tasks.append(InputChecklistTask(
+                id=idx,
+                text=numbered_text,
+            ))
+
+        checklist = InputChecklist(
+            title=human_date,
+            tasks=tasks,
+            others_can_add_tasks=False,
+            others_can_mark_tasks_as_done=True,
+        )
+
         logger.info(f"📤 Отправляю чеклист для chat_id={chat_id}, title='{human_date}'")
         msg = await bot.send_checklist(
             business_connection_id=user_state.business_connection_id,
@@ -291,7 +350,7 @@ async def create_checklist_for_user(
         logger.info(f"✅ Чеклист создан для chat_id={chat_id}, message_id={msg.message_id}")
     except Exception as e:
         logger.error(f"❌ Ошибка при создании чеклиста для chat_id={chat_id}: {e}", exc_info=True)
-        raise
+        # Ничего не пробрасываем — просто логируем
 
 
 async def update_checklist_for_user(
@@ -302,44 +361,52 @@ async def update_checklist_for_user(
     """
     Обновляет существующий чеклист на основе user_state.tasks.
     """
-    if user_state.checklist_message_id is None:
-        # на всякий случай: если вдруг нет чеклиста — создаём
-        await create_checklist_for_user(bot, chat_id, user_state)
-        return
-
-    tasks = [
-        InputChecklistTask(
-            id=idx,
-            text=text,
-        )
-        for idx, text in enumerate(user_state.tasks, start=1)
-    ]
-
-    checklist = InputChecklist(
-        title=get_today_human_date(),
-        tasks=tasks,
-        others_can_add_tasks=False,
-        others_can_mark_tasks_as_done=True,
-    )
-
     try:
-        await bot.edit_message_checklist(
-            business_connection_id=user_state.business_connection_id,
-            chat_id=chat_id,
-            message_id=user_state.checklist_message_id,
-            checklist=checklist,
-        )
-        logger.info(f"📝 Чеклист обновлён для chat_id={chat_id}, задач: {len(user_state.tasks)}")
-    except Exception as e:
-        error_msg = str(e)
-        # Если чеклист не найден (удален или неверный message_id), создаём новый
-        if "Message_id_invalid" in error_msg or "message not found" in error_msg.lower():
-            logger.warning(f"⚠️ Чеклист message_id={user_state.checklist_message_id} не найден, создаю новый для chat_id={chat_id}")
-            user_state.checklist_message_id = None  # Сбрасываем старый ID
+        if user_state.checklist_message_id is None:
+            # на всякий случай: если вдруг нет чеклиста — создаём
             await create_checklist_for_user(bot, chat_id, user_state)
-        else:
-            logger.error(f"❌ Ошибка при обновлении чеклиста для chat_id={chat_id}: {e}", exc_info=True)
-            raise
+            return
+
+        tasks = []
+        for idx, text in enumerate(user_state.tasks, start=1):
+            # Формируем текст с номером
+            numbered_text = f"{idx}. {text}"
+            # Обрезаем до 100 символов (лимит Telegram API для чеклистов)
+            if len(numbered_text) > 100:
+                numbered_text = numbered_text[:97].rstrip() + "…"
+            tasks.append(InputChecklistTask(
+                id=idx,
+                text=numbered_text,
+            ))
+
+        checklist = InputChecklist(
+            title=get_today_human_date(),
+            tasks=tasks,
+            others_can_add_tasks=False,
+            others_can_mark_tasks_as_done=True,
+        )
+
+        try:
+            await bot.edit_message_checklist(
+                business_connection_id=user_state.business_connection_id,
+                chat_id=chat_id,
+                message_id=user_state.checklist_message_id,
+                checklist=checklist,
+            )
+            logger.info(f"📝 Чеклист обновлён для chat_id={chat_id}, задач: {len(user_state.tasks)}")
+        except Exception as e:
+            error_msg = str(e)
+            # Если чеклист не найден (удален или неверный message_id), создаём новый
+            if "Message_id_invalid" in error_msg or "message not found" in error_msg.lower():
+                logger.warning(f"⚠️ Чеклист message_id={user_state.checklist_message_id} не найден, создаю новый для chat_id={chat_id}")
+                user_state.checklist_message_id = None  # Сбрасываем старый ID
+                await create_checklist_for_user(bot, chat_id, user_state)
+            else:
+                logger.error(f"❌ Ошибка при обновлении чеклиста для chat_id={chat_id}: {e}", exc_info=True)
+                # Ничего не пробрасываем — просто логируем
+    except Exception as e:
+        logger.error(f"❌ Ошибка при обновлении чеклиста для chat_id={chat_id}: {e}", exc_info=True)
+        # Ничего не пробрасываем — просто логируем
 
 
 # ===== БЕЗОПАСНОЕ УДАЛЕНИЕ СООБЩЕНИЙ =====
@@ -504,26 +571,40 @@ async def handle_task_addition(update: Update, context: ContextTypes.DEFAULT_TYP
     task_text = extract_task_text_from_business_message(business_msg)
     logger.info(f"📄 Извлеченный текст задачи: {task_text!r}")
     
-    # 3. Добавить задачу в state
-    user_state.tasks.append(task_text)
-    # Явно обновляем состояние
-    STATE[chat_id] = user_state
-    logger.info(f"📋 Задач в списке: {len(user_state.tasks)}")
+    # Если текст задачи не получен (сообщение без текста) — просто удаляем сообщение и выходим
+    if task_text is None:
+        await safe_delete(
+            context.bot,
+            user_state.business_connection_id,
+            chat_id,
+            business_msg.message_id,
+        )
+        logger.info(f"🗑️ Сообщение без текста удалено для chat_id={chat_id}")
+        return
     
-    # 4. Обновить чеклист
-    await update_checklist_for_user(context.bot, chat_id, user_state)
-    # Явно обновляем состояние после обновления чеклиста
-    STATE[chat_id] = user_state
+    # 3. Добавить задачу в state и обновить чеклист
+    try:
+        user_state.tasks.append(task_text)
+        # Явно обновляем состояние
+        STATE[chat_id] = user_state
+        logger.info(f"📋 Задач в списке: {len(user_state.tasks)}")
+        
+        # 4. Обновить чеклист
+        await update_checklist_for_user(context.bot, chat_id, user_state)
+        # Явно обновляем состояние после обновления чеклиста
+        STATE[chat_id] = user_state
+        
+        logger.info(f"✅ Задача добавлена в чеклист для chat_id={chat_id}: {task_text!r}")
+    except Exception as e:
+        logger.error(f"❌ Ошибка при добавлении задачи для chat_id={chat_id}: {e}", exc_info=True)
     
-    # 5. Удалить оригинальное сообщение пользователя
+    # 5. В любом случае — пробуем удалить исходное сообщение
     await safe_delete(
         context.bot,
         user_state.business_connection_id,
         chat_id,
         business_msg.message_id,
     )
-    
-    logger.info(f"✅ Задача добавлена в чеклист для chat_id={chat_id}: {task_text!r}")
 
 
 # ===== ОБРАБОТЧИКИ =====
@@ -545,51 +626,61 @@ async def handle_all_updates(update: Update, context: ContextTypes.DEFAULT_TYPE)
     
     # Обработка business_message
     if update.business_message:
-        business_msg = update.business_message
-        
-        business_connection_id = business_msg.business_connection_id
-        chat_id = business_msg.chat.id
-        message_text = business_msg.text if business_msg.text else "[нет текста]"
-        
-        # Логируем основную информацию (INFO)
-        logger.info(f"📨 business_message получен")
-        logger.info(f"   business_connection_id: {business_connection_id}")
-        logger.info(f"   chat.id: {chat_id}")
-        logger.info(f"   текст сообщения: {message_text}")
-        
-        # Полный update.to_dict() только на DEBUG уровне
-        logger.debug(f"Полная структура update: {update.to_dict()}")
-        
-        # Получаем или создаём состояние пользователя
-        user_state = get_or_create_user_state(update)
-        if not user_state:
-            logger.error(f"❌ Не удалось получить user_state для chat_id={chat_id}")
+        try:
+            business_msg = update.business_message
+            
+            # Отбрасываем системные / служебные бизнес-сообщения (в т.ч. чеклист-нотификации)
+            if is_system_or_service_business_message(business_msg):
+                logger.info("ℹ️ Сервисное business_message (чеклист/система) — пропускаю, не добавляю как задачу")
+                return
+            
+            business_connection_id = business_msg.business_connection_id
+            chat_id = business_msg.chat.id
+            message_text = business_msg.text if business_msg.text else "[нет текста]"
+            
+            # Логируем основную информацию (INFO)
+            logger.info(f"📨 business_message получен")
+            logger.info(f"   business_connection_id: {business_connection_id}")
+            logger.info(f"   chat.id: {chat_id}")
+            logger.info(f"   текст сообщения: {message_text}")
+            
+            # Полный update.to_dict() только на DEBUG уровне
+            logger.debug(f"Полная структура update: {update.to_dict()}")
+            
+            # Получаем или создаём состояние пользователя
+            user_state = get_or_create_user_state(update)
+            if not user_state:
+                logger.error(f"❌ Не удалось получить user_state для chat_id={chat_id}")
+                return
+            
+            text = business_msg.text or ""
+            
+            # Логируем текущее состояние для отладки
+            logger.info(f"🔍 Состояние пользователя chat_id={chat_id}: asked_for_time={user_state.asked_for_time}, waiting_for_time={user_state.waiting_for_time}, time={user_state.time!r}, текст: {text!r}")
+            logger.info(f"🔍 STATE содержит chat_id={chat_id}: {chat_id in STATE}, всего пользователей в STATE: {len(STATE)}")
+            
+            # ЧЁТКИЙ ПОРЯДОК ПРОВЕРОК:
+            # 1) Ещё не просили время → интро + запрос
+            if not user_state.asked_for_time:
+                logger.info(f"🆕 Первый контакт для chat_id={chat_id}, вызываю handle_first_message")
+                await handle_first_message(update, context, user_state)
+                return
+            
+            # 2) Уже просили время, но оно ещё НЕ установлено → парсим HH:MM
+            # (проверяем именно time is None, чтобы ловить все попытки ввода времени)
+            if user_state.asked_for_time and user_state.time is None:
+                logger.info(f"⏰ Ожидание времени для chat_id={chat_id}, вызываю handle_time_input")
+                await handle_time_input(update, context, user_state)
+                return
+            
+            # 3) Время установлено (time is not None) → обрабатываем сообщение как задачу
+            logger.info(f"📝 Время установлено для chat_id={chat_id}, вызываю handle_task_addition")
+            await handle_task_addition(update, context, user_state)
             return
-        
-        text = business_msg.text or ""
-        
-        # Логируем текущее состояние для отладки
-        logger.info(f"🔍 Состояние пользователя chat_id={chat_id}: asked_for_time={user_state.asked_for_time}, waiting_for_time={user_state.waiting_for_time}, time={user_state.time!r}, текст: {text!r}")
-        logger.info(f"🔍 STATE содержит chat_id={chat_id}: {chat_id in STATE}, всего пользователей в STATE: {len(STATE)}")
-        
-        # ЧЁТКИЙ ПОРЯДОК ПРОВЕРОК:
-        # 1) Ещё не просили время → интро + запрос
-        if not user_state.asked_for_time:
-            logger.info(f"🆕 Первый контакт для chat_id={chat_id}, вызываю handle_first_message")
-            await handle_first_message(update, context, user_state)
+        except Exception as e:
+            logger.error(f"❌ Ошибка в handle_all_updates при обработке business_message: {e}", exc_info=True)
+            # Ничего не пробрасываем дальше — чтобы не останавливать бота
             return
-        
-        # 2) Уже просили время, но оно ещё НЕ установлено → парсим HH:MM
-        # (проверяем именно time is None, чтобы ловить все попытки ввода времени)
-        if user_state.asked_for_time and user_state.time is None:
-            logger.info(f"⏰ Ожидание времени для chat_id={chat_id}, вызываю handle_time_input")
-            await handle_time_input(update, context, user_state)
-            return
-        
-        # 3) Время установлено (time is not None) → обрабатываем сообщение как задачу
-        logger.info(f"📝 Время установлено для chat_id={chat_id}, вызываю handle_task_addition")
-        await handle_task_addition(update, context, user_state)
-        return
     
     # Обработка обычного message
     if update.message:
@@ -601,8 +692,17 @@ async def handle_all_updates(update: Update, context: ContextTypes.DEFAULT_TYPE)
 
 
 async def error_handler(update: object, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """Обработчик ошибок"""
-    logger.error(f"Ошибка при обработке update: {context.error}", exc_info=context.error)
+    """
+    Глобальный обработчик ошибок — логируем, но не даём боту упасть.
+    """
+    logger.error("❌ Ошибка в обработке апдейта:", exc_info=context.error)
+
+    # Дополнительно можно различать типы ошибок
+    err = context.error
+    if isinstance(err, TelegramError):
+        logger.warning(f"⚠️ Ошибка Telegram API: {err}")
+    else:
+        logger.warning(f"⚠️ Неожиданная ошибка: {err}")
 
 
 def main():
