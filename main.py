@@ -121,31 +121,123 @@ def get_today_human_date() -> str:
 
 def extract_task_text_from_business_message(bmsg) -> str:
     """
-    Формирует текст задачи для любого business_message:
-    - Если есть текст или подпись — берём их
-    - Если это медиа без текста — даём осмысленное название
+    Возвращает строку задачи.
+    - text/caption
+    - медиазаглушки
+    - если сообщение пересланное — добавляет отправителя в скобках: (Имя), (@username), (Скрытый отправитель)
     """
-    # 1. Если есть текст или подпись — берём их
-    if bmsg.text or bmsg.caption:
-        return (bmsg.text or bmsg.caption).strip()
-    
-    # 2. Если это медиа без текста — даём осмысленное название
-    if bmsg.photo:
-        return "Фото"
-    if bmsg.voice:
-        return "Голосовое сообщение"
-    if bmsg.video:
-        return "Видео"
-    if bmsg.document:
-        filename = bmsg.document.file_name if bmsg.document else None
-        return f"Файл: {filename}" if filename else "Документ"
-    if bmsg.audio:
-        return "Аудиофайл"
-    if bmsg.sticker:
-        return "Стикер"
-    
-    # 3. На всякий случай общий fallback
-    return "Сообщение"
+
+    # 1) Базовый текст
+    text = bmsg.text or bmsg.caption
+    if not text:
+        if getattr(bmsg, "photo", None):
+            text = "Фото"
+        elif getattr(bmsg, "voice", None):
+            text = "Голосовое сообщение"
+        elif getattr(bmsg, "video", None):
+            text = "Видео"
+        elif getattr(bmsg, "document", None):
+            doc = bmsg.document
+            name = getattr(doc, "file_name", None) or "Документ"
+            text = f"Файл: {name}"
+        elif getattr(bmsg, "audio", None):
+            text = "Аудиофайл"
+        elif getattr(bmsg, "sticker", None):
+            text = "Стикер"
+        else:
+            text = "Сообщение"
+
+    sender = None
+
+    # ===== СТАРЫЕ ПОЛЯ forward_* =====
+    if getattr(bmsg, "forward_from", None):
+        u = bmsg.forward_from
+        if getattr(u, "username", None):
+            sender = f"@{u.username}"
+        elif getattr(u, "first_name", None):
+            name = u.first_name
+            if getattr(u, "last_name", None):
+                name += f" {u.last_name}"
+            sender = name
+        else:
+            sender = "Пользователь"
+
+    elif getattr(bmsg, "forward_from_chat", None):
+        c = bmsg.forward_from_chat
+        if getattr(c, "title", None):
+            sender = c.title
+        elif getattr(c, "username", None):
+            sender = f"@{c.username}"
+        else:
+            sender = "Чат"
+
+    elif getattr(bmsg, "forward_sender_name", None):
+        sender = bmsg.forward_sender_name
+
+    elif getattr(bmsg, "forward_from_message_id", None):
+        sender = "Скрытый отправитель"
+
+    # ===== НОВЫЕ ПОЛЯ origin / forward_origin (если они есть) =====
+    if sender is None:
+        origin = getattr(bmsg, "forward_origin", None) or getattr(bmsg, "origin", None)
+        if origin is not None:
+            # type: "user" | "hidden_user" | "chat" | "channel"
+            otype = getattr(origin, "type", None)
+
+            if otype == "user" and getattr(origin, "sender_user", None):
+                u = origin.sender_user
+                if getattr(u, "username", None):
+                    sender = f"@{u.username}"
+                else:
+                    name = getattr(u, "first_name", "") or ""
+                    last = getattr(u, "last_name", "") or ""
+                    sender = (name + " " + last).strip() or "Пользователь"
+
+            elif otype == "hidden_user":
+                # origin.sender_user_name
+                sender = getattr(origin, "sender_user_name", None) or "Скрытый отправитель"
+
+            elif otype == "chat":
+                chat = getattr(origin, "sender_chat", None)
+                if chat:
+                    if getattr(chat, "title", None):
+                        sender = chat.title
+                    elif getattr(chat, "username", None):
+                        sender = f"@{chat.username}"
+                    else:
+                        sender = "Чат"
+
+            elif otype == "channel":
+                chat = getattr(origin, "chat", None)
+                if chat:
+                    if getattr(chat, "title", None):
+                        sender = chat.title
+                    elif getattr(chat, "username", None):
+                        sender = f"@{chat.username}"
+                    else:
+                        sender = "Канал"
+
+    # ===== ЛОГИРОВАНИЕ ДЛЯ ОТЛАДКИ =====
+    # Один раз посмотреть, что вообще приходит
+    try:
+        logger.info(
+            "forward_debug: sender=%r, "
+            "forward_from=%r, forward_from_chat=%r, forward_sender_name=%r, "
+            "has_origin=%r",
+            sender,
+            getattr(bmsg, 'forward_from', None),
+            getattr(bmsg, 'forward_from_chat', None),
+            getattr(bmsg, 'forward_sender_name', None),
+            hasattr(bmsg, 'forward_origin') or hasattr(bmsg, 'origin'),
+        )
+    except Exception:
+        pass
+
+    # 3) Добавляем отправителя в скобках, если нашли
+    if sender:
+        text = f"{text} ({sender})"
+
+    return text.strip()
 
 
 async def create_checklist_for_user(
@@ -239,8 +331,15 @@ async def update_checklist_for_user(
         )
         logger.info(f"📝 Чеклист обновлён для chat_id={chat_id}, задач: {len(user_state.tasks)}")
     except Exception as e:
-        logger.error(f"❌ Ошибка при обновлении чеклиста для chat_id={chat_id}: {e}", exc_info=True)
-        raise
+        error_msg = str(e)
+        # Если чеклист не найден (удален или неверный message_id), создаём новый
+        if "Message_id_invalid" in error_msg or "message not found" in error_msg.lower():
+            logger.warning(f"⚠️ Чеклист message_id={user_state.checklist_message_id} не найден, создаю новый для chat_id={chat_id}")
+            user_state.checklist_message_id = None  # Сбрасываем старый ID
+            await create_checklist_for_user(bot, chat_id, user_state)
+        else:
+            logger.error(f"❌ Ошибка при обновлении чеклиста для chat_id={chat_id}: {e}", exc_info=True)
+            raise
 
 
 # ===== БЕЗОПАСНОЕ УДАЛЕНИЕ СООБЩЕНИЙ =====
