@@ -1,33 +1,71 @@
-# Telegram Business Bot - ЭТАП 1
+# Telegram Business Bot
 
-Telegram business-бот на Python для работы с бизнес-аккаунтами.
+Telegram business-бот на Python для работы с бизнес-аккаунтами и управления ежедневными чеклистами.
 
 ## Требования
 
-- Python 3.11+
+- Python 3.9+
 - Telegram Bot Token
 - Telegram Business Account (для подключения бота через Connected Bots)
 
 ## Установка
 
-1. Установите зависимости:
+1. Клонируйте репозиторий:
+
+```bash
+git clone <repository_url>
+cd horeca_fam
+```
+
+2. Установите зависимости:
 
 ```bash
 pip install -r requirements.txt
 ```
 
-2. Создайте файл `.env` в корне проекта и добавьте токен бота:
+3. Создайте файл `.env` в корне проекта на основе `.env.example`:
+
+```bash
+cp .env.example .env
+```
+
+4. Отредактируйте `.env` и добавьте токен бота:
 
 ```env
 BOT_TOKEN=your_bot_token_here
+ENV=prod
 ```
 
 Замените `your_bot_token_here` на реальный токен вашего бота, полученный от @BotFather.
 
+**Примечание:** `TELEGRAM_BUSINESS_CONNECTION_ID` получается автоматически из сообщений, его не нужно указывать вручную.
+
 ## Запуск
 
+### Локальный запуск
+
+#### Вариант 1: Через start.sh (рекомендуется для продакшна)
+
 ```bash
-python main.py
+./start.sh
+```
+
+#### Вариант 2: Через скрипты разработки
+
+```bash
+./scripts/start_bot.sh
+```
+
+или
+
+```bash
+./scripts/restart_bot.sh
+```
+
+#### Вариант 3: Напрямую
+
+```bash
+python3 bot/main.py
 ```
 
 После запуска вы увидите в консоли:
@@ -36,18 +74,532 @@ python main.py
 Ожидаю business_message с бизнес-аккаунта...
 ```
 
+### Запуск через Docker
+
+1. Создайте `Dockerfile` (если его нет):
+
+```dockerfile
+FROM python:3.11-slim
+
+WORKDIR /app
+
+COPY requirements.txt .
+RUN pip install --no-cache-dir -r requirements.txt
+
+COPY . .
+
+CMD ["python3", "bot/main.py"]
+```
+
+2. Создайте `.dockerignore`:
+
+```
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.Python
+env/
+venv/
+.env
+*.log
+*.db
+*.pid
+archive/
+state_backup_*.db
+```
+
+3. Соберите образ:
+
+```bash
+docker build -t telegram-bot .
+```
+
+4. Запустите контейнер:
+
+```bash
+docker run -d \
+  --name telegram-bot \
+  --env-file .env \
+  -v $(pwd)/bot.db:/app/bot.db \
+  -v $(pwd)/archive:/app/archive \
+  telegram-bot
+```
+
+### Деплой на DigitalOcean (Ubuntu + systemd)
+
+Пошаговая инструкция по деплою на сервер DigitalOcean с использованием systemd.
+
+**ВАЖНО:** Путь `/home/botuser/bot-project` в инструкциях должен совпадать с реальным путём до проекта на сервере. Если вы клонировали репозиторий в другую директорию, замените путь в командах и в файле `bot.service`.
+
+#### Шаг 1: Подключение к серверу
+
+```bash
+ssh root@YOUR_SERVER_IP
+```
+
+#### Шаг 2: Создание пользователя
+
+Создайте пользователя `botuser` и выдайте ему права sudo:
+
+```bash
+adduser botuser
+usermod -aG sudo botuser
+```
+
+#### Шаг 3: Установка зависимостей
+
+Установите Python, venv, pip и git:
+
+```bash
+sudo apt update && sudo apt install -y python3 python3-venv python3-pip git
+```
+
+#### Шаг 4: Переход под пользователя botuser
+
+```bash
+su - botuser
+```
+
+#### Шаг 5: Клонирование репозитория
+
+```bash
+git clone <URL_РЕПОЗИТОРИЯ> bot-project
+cd bot-project
+```
+
+#### Шаг 6: Создание виртуального окружения
+
+```bash
+python3 -m venv venv
+source venv/bin/activate
+pip install --upgrade pip
+pip install -r requirements.txt
+```
+
+#### Шаг 7: Настройка переменных окружения
+
+Создайте файл `.env` в корне проекта (рядом с `bot/main.py`):
+
+```bash
+cp .env.example .env
+nano .env  # или используйте ваш любимый редактор
+```
+
+Заполните `.env` реальными значениями:
+
+```env
+BOT_TOKEN=your_real_bot_token_here
+ENV=prod
+```
+
+#### Шаг 8: Создание директории для логов
+
+Перед установкой systemd сервиса создайте директорию для логов и выдайте права пользователю `botuser`:
+
+```bash
+sudo mkdir -p /var/log/bot
+sudo chown botuser:botuser /var/log/bot
+```
+
+#### Шаг 9: Установка systemd сервиса
+
+Скопируйте `bot.service` в системную директорию:
+
+```bash
+sudo cp bot.service /etc/systemd/system/bot.service
+```
+
+**ВАЖНО:** Перед копированием убедитесь, что пути в `bot.service` соответствуют реальным путям на вашем сервере:
+- `WorkingDirectory=/home/botuser/bot-project`
+- `ExecStart=/home/botuser/bot-project/venv/bin/python3 /home/botuser/bot-project/bot/main.py`
+- `EnvironmentFile=/home/botuser/bot-project/.env`
+- `StandardOutput=append:/var/log/bot/bot.log`
+- `StandardError=append:/var/log/bot/bot.err.log`
+
+Если проект находится в другой директории, отредактируйте `bot.service` перед копированием:
+
+```bash
+nano bot.service  # отредактируйте пути
+sudo cp bot.service /etc/systemd/system/bot.service
+```
+
+#### Шаг 10: Запуск сервиса
+
+Перезагрузите конфигурацию systemd и включите сервис:
+
+```bash
+sudo systemctl daemon-reload
+sudo systemctl enable bot.service
+sudo systemctl start bot.service
+```
+
+#### Шаг 11: Проверка статуса
+
+Проверьте, что сервис запущен:
+
+```bash
+sudo systemctl status bot.service
+```
+
+Или используйте скрипт проверки статуса:
+
+```bash
+./check_status.sh
+```
+
+Вы должны увидеть статус `active (running)`.
+
+### Мониторинг и отладка
+
+#### Проверка статуса бота
+
+Проверить, запущен ли бот, можно несколькими способами:
+
+**Через systemctl:**
+
+```bash
+sudo systemctl status bot.service
+```
+
+**Через скрипт check_status.sh (на сервере):**
+
+```bash
+./check_status.sh
+```
+
+Скрипт покажет:
+- ✅ Зелёное сообщение, если бот запущен
+- ❌ Красное сообщение с последними логами, если бот не запущен
+
+#### Просмотр логов
+
+Логи бота доступны в двух местах:
+
+**1. Через journald (системные логи):**
+
+```bash
+# Просмотр логов в реальном времени
+sudo journalctl -u bot.service -f
+
+# Просмотр последних 100 строк
+sudo journalctl -u bot.service -n 100
+
+# Просмотр логов за сегодня
+sudo journalctl -u bot.service --since today
+```
+
+**2. Через лог-файлы (стандартный вывод и ошибки):**
+
+```bash
+# Просмотр стандартного вывода (stdout)
+sudo tail -n 50 /var/log/bot/bot.log
+
+# Просмотр ошибок (stderr)
+sudo tail -n 50 /var/log/bot/bot.err.log
+
+# Просмотр в реальном времени
+sudo tail -f /var/log/bot/bot.log
+sudo tail -f /var/log/bot/bot.err.log
+```
+
+#### Перезапуск сервиса
+
+Если нужно перезапустить бота вручную:
+
+```bash
+sudo systemctl restart bot.service
+```
+
+#### Что делать, если бот не запускается после деплоя
+
+Если после деплоя бот не запускается, выполните следующие шаги:
+
+1. **Проверьте статус сервиса:**
+
+```bash
+sudo systemctl status bot.service
+```
+
+2. **Посмотрите последние логи:**
+
+```bash
+sudo journalctl -u bot.service -n 50
+```
+
+3. **Проверьте наличие файла `.env`:**
+
+```bash
+ls -la /home/botuser/bot-project/.env
+cat /home/botuser/bot-project/.env
+```
+
+Убедитесь, что:
+- Файл `.env` существует
+- В нём указан корректный `BOT_TOKEN`
+- Токен бота действителен
+
+4. **Проверьте права доступа к директории логов:**
+
+```bash
+ls -la /var/log/bot
+```
+
+Убедитесь, что директория существует и принадлежит пользователю `botuser`:
+
+```bash
+sudo mkdir -p /var/log/bot
+sudo chown botuser:botuser /var/log/bot
+```
+
+5. **Проверьте логи ошибок:**
+
+```bash
+sudo tail -n 50 /var/log/bot/bot.err.log
+```
+
+6. **Проверьте, что виртуальное окружение активировано и зависимости установлены:**
+
+```bash
+cd /home/botuser/bot-project
+source venv/bin/activate
+python3 bot/main.py
+```
+
+Если бот запускается вручную, но не через systemd, проверьте конфигурацию `bot.service`.
+
+#### Управление сервисом
+
+```bash
+# Остановить бота
+sudo systemctl stop bot.service
+
+# Запустить бота
+sudo systemctl start bot.service
+
+# Перезапустить бота
+sudo systemctl restart bot.service
+
+# Проверить статус
+sudo systemctl status bot.service
+```
+
+#### Автодеплой через deploy.sh
+
+Для автоматического обновления бота на сервере используйте скрипт `deploy.sh`. Он подключается к серверу по SSH, обновляет код и перезапускает сервис.
+
+**Перед первым использованием:**
+
+1. Убедитесь, что на сервере настроен SSH-доступ для пользователя `botuser`:
+
+```bash
+# На вашем локальном компьютере
+ssh-copy-id botuser@YOUR_SERVER_IP
+```
+
+2. Загрузите файл `.env` на сервер (только один раз):
+
+```bash
+scp .env botuser@YOUR_SERVER_IP:~/bot-project/.env
+```
+
+**Использование:**
+
+Запустите скрипт с IP адресом сервера:
+
+```bash
+./deploy.sh 167.172.xxx.xxx
+```
+
+Или без аргумента (скрипт спросит IP):
+
+```bash
+./deploy.sh
+```
+
+Скрипт автоматически:
+- ✅ Проверяет наличие `.env` на сервере
+- ✅ Подключается к серверу по SSH
+- ✅ Обновляет код через `git pull --rebase`
+- ✅ Перезагружает конфигурацию systemd
+- ✅ Перезапускает сервис `bot.service`
+- ✅ Показывает статус сервиса
+
+**Важно:**
+- Скрипт запускается **локально** на вашем компьютере
+- Требуется SSH-доступ к серверу без пароля (настройте через `ssh-copy-id`)
+- Файл `.env` загружается на сервер только один раз вручную
+- При каждом деплое код обновляется из репозитория, но `.env` не перезаписывается
+
+#### Обновление бота (ручной способ)
+
+Если нужно обновить бота вручную:
+
+1. Остановите сервис:
+
+```bash
+sudo systemctl stop bot.service
+```
+
+2. Перейдите в директорию проекта:
+
+```bash
+cd /home/botuser/bot-project
+```
+
+3. Обновите код:
+
+```bash
+git pull
+```
+
+4. Активируйте виртуальное окружение и обновите зависимости (если нужно):
+
+```bash
+source venv/bin/activate
+pip install -r requirements.txt
+```
+
+5. Запустите сервис:
+
+```bash
+sudo systemctl start bot.service
+```
+
+### Деплой на сервер (общие инструкции)
+
+#### Вариант 1: Systemd service
+
+1. Создайте файл `/etc/systemd/system/telegram-bot.service`:
+
+```ini
+[Unit]
+Description=Telegram Business Bot
+After=network.target
+
+[Service]
+Type=simple
+User=your_user
+WorkingDirectory=/path/to/horeca_fam
+EnvironmentFile=/path/to/horeca_fam/.env
+ExecStart=/usr/bin/python3 /path/to/horeca_fam/bot/main.py
+Restart=always
+RestartSec=10
+
+[Install]
+WantedBy=multi-user.target
+```
+
+2. Активируйте и запустите сервис:
+
+```bash
+sudo systemctl daemon-reload
+sudo systemctl enable telegram-bot
+sudo systemctl start telegram-bot
+```
+
+3. Проверьте статус:
+
+```bash
+sudo systemctl status telegram-bot
+```
+
+4. Просмотр логов:
+
+```bash
+sudo journalctl -u telegram-bot -f
+```
+
+#### Вариант 2: PM2 (Node.js process manager)
+
+```bash
+npm install -g pm2
+pm2 start start.sh --name telegram-bot
+pm2 save
+pm2 startup
+```
+
+#### Вариант 3: Supervisor
+
+1. Установите supervisor:
+
+```bash
+sudo apt-get install supervisor
+```
+
+2. Создайте конфигурацию `/etc/supervisor/conf.d/telegram-bot.conf`:
+
+```ini
+[program:telegram-bot]
+command=/path/to/horeca_fam/start.sh
+directory=/path/to/horeca_fam
+user=your_user
+autostart=true
+autorestart=true
+stderr_logfile=/var/log/telegram-bot.err.log
+stdout_logfile=/var/log/telegram-bot.out.log
+environment=BOT_TOKEN="your_token"
+```
+
+3. Перезагрузите supervisor:
+
+```bash
+sudo supervisorctl reread
+sudo supervisorctl update
+sudo supervisorctl start telegram-bot
+```
+
 ## Структура проекта
 
 ```
 .
-├── main.py              # Точка входа
-├── requirements.txt     # Зависимости
-├── .env                # Переменные окружения (токен) - создать вручную
-├── README.md           # Документация
-├── VERSION             # Текущая версия бота
-├── CHANGELOG.md        # История изменений
-└── bot.log             # Логи (создается автоматически)
+├── bot/                    # Основной код бота
+│   ├── __init__.py
+│   ├── main.py            # Главный файл бота
+│   ├── state.py           # Управление состоянием пользователей
+│   ├── db.py              # Работа с базой данных SQLite
+│   ├── helpers_*.py       # Вспомогательные модули
+│   ├── cleanup_all_users.py  # Скрипт очистки пользователей
+│   └── ...
+├── docs/                   # Документация
+│   ├── BUSINESS_CONNECTION_SETUP.md
+│   ├── CHECK_BOT.md
+│   └── ...
+├── scripts/                # Скрипты запуска
+│   ├── start_bot.sh
+│   └── restart_bot.sh
+├── archive/                # Архив ежедневных отчётов
+├── .env                    # Переменные окружения (токен) - создать вручную
+├── .env.example            # Шаблон переменных окружения
+├── requirements.txt        # Зависимости Python
+├── start.sh                # Скрипт запуска для продакшна
+├── README.md               # Документация
+├── VERSION                 # Текущая версия бота
+├── CHANGELOG.md            # История изменений
+├── bot.log                 # Логи (создается автоматически)
+└── bot.db                  # База данных SQLite (создается автоматически)
 ```
+
+## Использование .env
+
+Файл `.env` содержит конфиденциальные данные и не должен попадать в git. Используйте `.env.example` как шаблон:
+
+```env
+# Telegram Bot Configuration
+BOT_TOKEN=your_bot_token_here
+
+# Telegram Business Connection (опционально, получается автоматически из сообщений)
+# TELEGRAM_BUSINESS_CONNECTION_ID=
+
+# Environment (dev/prod)
+ENV=prod
+```
+
+**Важно:**
+- Добавьте `.env` в `.gitignore`
+- На сервере создайте `.env` вручную с реальными значениями
+- Не коммитьте `.env` в репозиторий
+- Скрипт `start.sh` автоматически загружает переменные из `.env`
 
 ## Что умеет бот на ЭТАПЕ 1
 
@@ -130,3 +682,99 @@ git checkout v0.2.0
 
 После этого вы получаете код ровно той версии, которая была помечена тегом `v0.2.0`.
 Можно запустить бота в этом состоянии и дождаться, пока новая версия будет исправлена.
+
+## Деплой на продакшн-сервер
+
+### Подготовка сервера
+
+1. Установите Python 3.9+:
+
+```bash
+sudo apt-get update
+sudo apt-get install python3 python3-pip python3-venv
+```
+
+2. Клонируйте репозиторий:
+
+```bash
+git clone <repository_url>
+cd horeca_fam
+```
+
+3. Создайте виртуальное окружение (опционально, но рекомендуется):
+
+```bash
+python3 -m venv venv
+source venv/bin/activate
+```
+
+4. Установите зависимости:
+
+```bash
+pip install -r requirements.txt
+```
+
+5. Создайте `.env` файл:
+
+```bash
+cp .env.example .env
+nano .env  # или используйте ваш любимый редактор
+```
+
+6. Заполните `.env` реальными значениями:
+
+```env
+BOT_TOKEN=your_real_bot_token
+ENV=prod
+```
+
+### Запуск через systemd (рекомендуется)
+
+См. раздел "Деплой на сервер" выше для инструкций по настройке systemd service.
+
+### Мониторинг и логи
+
+- Логи бота: `tail -f bot.log`
+- Логи systemd: `sudo journalctl -u telegram-bot -f`
+- База данных: `bot.db` (SQLite)
+- Архив отчётов: `archive/` (текстовые файлы с датами)
+
+### Обновление бота
+
+1. Остановите бота:
+
+```bash
+sudo systemctl stop telegram-bot
+```
+
+2. Обновите код:
+
+```bash
+git pull
+```
+
+3. Установите новые зависимости (если есть):
+
+```bash
+pip install -r requirements.txt
+```
+
+4. Запустите бота:
+
+```bash
+sudo systemctl start telegram-bot
+```
+
+### Резервное копирование
+
+Рекомендуется настроить автоматическое резервное копирование:
+
+1. База данных (`bot.db`) - содержит все данные пользователей
+2. Архив отчётов (`archive/`) - содержит историю отчётов
+3. Логи (`bot.log`) - для отладки
+
+Пример cron job для ежедневного бэкапа:
+
+```bash
+0 2 * * * tar -czf /backup/telegram-bot-$(date +\%Y\%m\%d).tar.gz /path/to/horeca_fam/bot.db /path/to/horeca_fam/archive/
+```

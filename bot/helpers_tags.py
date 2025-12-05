@@ -1,0 +1,90 @@
+"""
+Модуль для работы с тегами: клавиатура, пагинация.
+"""
+
+import logging
+from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
+from telegram.ext import ContextTypes
+from state import UserState, save_user_state
+
+logger = logging.getLogger(__name__)
+
+# Константа
+TAGS_PER_PAGE = 3  # Количество тегов на странице
+
+
+def build_tags_keyboard(user_state: UserState) -> InlineKeyboardMarkup:
+    """
+    Создаёт клавиатуру с тегами для текущей страницы.
+    До 3 тегов на странице, с кнопками навигации.
+    Всегда включает кнопки "Пропустить" и "Удалить" внизу.
+    Если история тегов пустая - показывает только кнопки действий.
+    """
+    tags = user_state.tags_history
+    
+    buttons = []
+    
+    # Если история тегов не пустая - показываем теги
+    if tags:
+        page = user_state.tags_page_index
+        total_pages = (len(tags) + TAGS_PER_PAGE - 1) // TAGS_PER_PAGE if tags else 0
+        
+        # Кнопки с тегами для текущей страницы
+        start_idx = page * TAGS_PER_PAGE
+        end_idx = min(start_idx + TAGS_PER_PAGE, len(tags))
+        
+        for tag in tags[start_idx:end_idx]:
+            buttons.append([InlineKeyboardButton(tag, callback_data=f"TAG_SELECT:{tag}")])
+        
+        # Кнопки навигации
+        nav_row = []
+        if page > 0:
+            nav_row.append(InlineKeyboardButton("⬅️", callback_data="TAGS_PAGE_PREV"))
+        if end_idx < len(tags):
+            nav_row.append(InlineKeyboardButton("➡️", callback_data="TAGS_PAGE_NEXT"))
+        
+        if nav_row:
+            buttons.append(nav_row)
+    
+    # Строка с действиями: Пропустить / Удалить (всегда в конце)
+    action_row = [
+        InlineKeyboardButton("➖ Пропустить", callback_data="TASK_SKIP"),
+        InlineKeyboardButton("❌ Удалить", callback_data="TASK_DELETE"),
+    ]
+    buttons.append(action_row)
+    
+    return InlineKeyboardMarkup(buttons)
+
+
+async def on_tags_page_next(update: Update, context: ContextTypes.DEFAULT_TYPE, user_state: UserState, chat_id: int) -> None:
+    """Обработка кнопки 'Вперёд' в пагинации тегов"""
+    total_pages = (len(user_state.tags_history) + TAGS_PER_PAGE - 1) // TAGS_PER_PAGE if user_state.tags_history else 0
+    if user_state.tags_page_index + 1 < total_pages:
+        user_state.tags_page_index += 1
+        save_user_state(chat_id, user_state)
+        
+        # Обновляем клавиатуру
+        if update.callback_query:
+            try:
+                await update.callback_query.edit_message_reply_markup(
+                    reply_markup=build_tags_keyboard(user_state)
+                )
+            except Exception as e:
+                logger.error(f"❌ Ошибка при обновлении клавиатуры тегов: {e}", exc_info=True)
+
+
+async def on_tags_page_prev(update: Update, context: ContextTypes.DEFAULT_TYPE, user_state: UserState, chat_id: int) -> None:
+    """Обработка кнопки 'Назад' в пагинации тегов"""
+    if user_state.tags_page_index > 0:
+        user_state.tags_page_index -= 1
+        save_user_state(chat_id, user_state)
+        
+        # Обновляем клавиатуру
+        if update.callback_query:
+            try:
+                await update.callback_query.edit_message_reply_markup(
+                    reply_markup=build_tags_keyboard(user_state)
+                )
+            except Exception as e:
+                logger.error(f"❌ Ошибка при обновлении клавиатуры тегов: {e}", exc_info=True)
+

@@ -1,0 +1,19 @@
+[Unit]
+Description=Telegram Checklist Bot
+After=network.target
+
+[Service]
+Type=simple
+WorkingDirectory=/home/botuser/bot-project
+ExecStart=/home/botuser/bot-project/venv/bin/python3 /home/botuser/bot-project/bot/main.py
+Restart=on-failure
+RestartSec=5
+User=botuser
+Group=botuser
+EnvironmentFile=/home/botuser/bot-project/.env
+StandardOutput=append:/var/log/bot/bot.log
+StandardError=append:/var/log/bot/bot.err.log
+
+[Install]
+WantedBy=multi-user.target
+

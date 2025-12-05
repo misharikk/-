@@ -5,9 +5,20 @@
 # Storage
 storage/
 *.log
+bot_output.log
+bot.log
+bot.pid
+
+# Database
+*.db
+*.db-journal
+bot.db
+state_backup_*.db
+bot/state.db
 
 # Python
 __pycache__/
+*.pyc
 *.py[cod]
 *$py.class
 *.so
@@ -15,15 +26,36 @@ __pycache__/
 env/
 venv/
 ENV/
+ENV.bak/
 build/
 dist/
 *.egg-info/
+.eggs/
+.pytest_cache/
+.mypy_cache/
+.dmypy.json
+dmypy.json
+.coverage
+.coverage.*
+htmlcov/
+.tox/
+.nox/
+.hypothesis/
 
 # IDE
 .vscode/
 .idea/
 *.swp
+*.swo
+*.swn
 
 # OS
 .DS_Store
 Thumbs.db
+*.tmp
+*.temp
+*.bak
+*~
+
+# Archive (опционально, если не хотите коммитить архивы)
+# archive/
