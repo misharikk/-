@@ -4,8 +4,8 @@
 
 import logging
 from pathlib import Path
-from datetime import datetime, timedelta
-from typing import List, Optional
+from datetime import datetime, timedelta, time
+from typing import List, Optional, Dict
 
 from state import UserState, TaskItem, TagChecklistState, save_user_state
 from helpers_checklist import get_today_human_date, get_human_date_from_iso, create_checklist_for_user, add_task_to_tag_checklist, rebuild_tag_checklist_for_user
@@ -17,6 +17,48 @@ logger = logging.getLogger(__name__)
 # Путь к папке с архивами (в корне проекта)
 PROJECT_ROOT = Path(__file__).parent.parent
 ARCHIVE_DIR = PROJECT_ROOT / "archive"
+
+
+def compute_local_datetime_and_offset(now_utc: datetime, user_time_str: str) -> tuple[datetime, int]:
+    """
+    Вычисляет локальное datetime пользователя и UTC-смещение на основе введенного времени.
+    
+    Args:
+        now_utc: текущее время сервера в UTC
+        user_time_str: строка вида 'HH:MM', которую ввёл пользователь как своё ЛОКАЛЬНОЕ время
+    
+    Returns:
+        tuple[datetime, int]: (local_dt, utc_offset_minutes)
+        - local_dt: локальное datetime пользователя
+        - utc_offset_minutes: смещение в минутах относительно UTC (в диапазоне [-12ч, +14ч])
+    
+    Алгоритм:
+    - Парсит HH:MM из user_time_str
+    - Вычисляет смещение так, чтобы (now_utc + offset).time() == (HH:MM)
+    - Нормализует смещение к диапазону [-12ч, +12ч]
+    """
+    from helpers_text import parse_time_string
+    
+    # Парсим время
+    parsed = parse_time_string(user_time_str)
+    if not parsed:
+        raise ValueError(f"Неверный формат времени: {user_time_str}")
+    
+    h, m = map(int, parsed.split(":"))
+    user_minutes = h * 60 + m
+    utc_minutes = now_utc.hour * 60 + now_utc.minute
+    
+    # Вычисляем raw_delta
+    raw_delta = (user_minutes - utc_minutes) % 1440
+    
+    # Нормализуем к диапазону [-12h, +12h]
+    # (raw_delta + 720) % 1440 - 720 переводит [0, 1440) в [-720, 720)
+    delta = (raw_delta + 720) % 1440 - 720
+    
+    # Вычисляем локальное datetime
+    local_dt = now_utc + timedelta(minutes=delta)
+    
+    return local_dt, delta
 
 
 def calc_minutes_until_midnight_from_user_time(user_state: UserState) -> int:
@@ -58,7 +100,7 @@ def calc_minutes_until_midnight_from_user_time(user_state: UserState) -> int:
     return minutes_to_midnight
 
 
-def generate_daily_report(user_state: UserState) -> str:
+def generate_daily_report(user_state: UserState, report_date: str = None) -> str:
     """
     Генерирует текстовый отчёт в формате Markdown.
     Показывает только выполненные задачи (task.done is True).
@@ -68,11 +110,19 @@ def generate_daily_report(user_state: UserState) -> str:
     
     [✅] Поесть
     [✅] Погулять
+    
+    Args:
+        user_state: Состояние пользователя с задачами
+        report_date: Дата для отчёта (если не указана, используется user_state.date)
     """
-    if not user_state.date:
+    # Используем переданную дату или дату из user_state
+    date_for_report = report_date or user_state.date
+    if not date_for_report:
         return "**Дата не указана**\n\nНет задач для отчёта."
     
-    human_date = get_human_date_from_iso(user_state.date)
+    # Используем формат "#6дек_сб" вместо "6 декабря"
+    from helpers_checklist import get_checklist_title_from_date
+    human_date = get_checklist_title_from_date(date_for_report)
     
     # Логирование для диагностики
     total_daily_tasks = len(user_state.tasks)
@@ -82,12 +132,17 @@ def generate_daily_report(user_state: UserState) -> str:
     total_tag_tasks = sum(len(tag_state.tasks) for tag_state in user_state.tag_checklists.values())
     completed_tag_count = sum(len([t for t in tag_state.tasks if t.done]) for tag_state in user_state.tag_checklists.values())
     
-    logger.info(f"📊 generate_daily_report: дата={user_state.date}, дневных задач всего={total_daily_tasks}, выполненных={completed_daily_count}, теговых задач всего={total_tag_tasks}, выполненных={completed_tag_count}")
+    logger.info(f"📊 generate_daily_report: дата отчёта={date_for_report}, дневных задач всего={total_daily_tasks}, выполненных={completed_daily_count}, теговых задач всего={total_tag_tasks}, выполненных={completed_tag_count}")
     
     report_lines = [f"**{human_date}**", ""]
     
     # Собираем только выполненные задачи из дневного чеклиста
+    # ИСКЛЮЧАЕМ автоматическую задачу "улыбнуться себе в зеркало" из отчёта
     for task in completed_daily_tasks:
+        # Пропускаем автоматическую задачу, даже если она выполнена
+        if task.text == "улыбнуться себе в зеркало":
+            logger.debug(f"  ⏭️ Пропускаем автоматическую задачу в отчёте: '{task.text}'")
+            continue
         report_lines.append(f"[✅] {task.text}")
         logger.debug(f"  ✓ Дневная задача: {task.text[:50]} (done={task.done})")
     
@@ -150,6 +205,20 @@ async def close_day_for_user(bot, chat_id: int, user_state: UserState = None) ->
         current_calculated_date = get_user_local_date(user_state)
         logger.info(f"📅 close_day_for_user: user_state.date={user_state.date}, вычисленная дата={current_calculated_date}, всего дневных задач={len(user_state.tasks)}, теговых чеклистов={len(user_state.tag_checklists)}")
         
+        # ЗАЩИТА ОТ ДВОЙНОГО ЗАКРЫТИЯ: проверяем, не закрыт ли уже день для этой даты
+        if user_state.last_closed_date == current_calculated_date:
+            logger.info(f"⏭️ День уже закрыт для chat_id={chat_id}, last_closed_date={user_state.last_closed_date}, current_date={current_calculated_date}")
+            return
+        
+        # Сохраняем дату закрытого дня ДО обновления на новую дату
+        closed_date = user_state.date
+        
+        # Обновляем user_state.date на актуальную вычисленную дату (для нового дня)
+        if user_state.date != current_calculated_date:
+            logger.info(f"🔄 Обновление даты для нового дня: {user_state.date} → {current_calculated_date}")
+            user_state.date = current_calculated_date
+            save_user_state(chat_id, user_state)
+        
         # Подсчитываем выполненные задачи ДО генерации отчёта
         completed_before = sum(1 for task in user_state.tasks if task.done)
         completed_tag_before = sum(len([t for t in tag_state.tasks if t.done]) for tag_state in user_state.tag_checklists.values())
@@ -157,8 +226,9 @@ async def close_day_for_user(bot, chat_id: int, user_state: UserState = None) ->
         
         # 1. Генерируем отчёт ДО фильтрации задач (чтобы включить все выполненные)
         # ВАЖНО: отчёт должен генерироваться из исходного состояния с выполненными задачами
-        report = generate_daily_report(user_state)
-        logger.info(f"📋 Отчёт сгенерирован для chat_id={chat_id}, дата={user_state.date}, длина={len(report)} символов")
+        # Используем дату закрытого дня (closed_date), а не новую дату
+        report = generate_daily_report(user_state, report_date=closed_date)
+        logger.info(f"📋 Отчёт сгенерирован для chat_id={chat_id}, дата закрытого дня={closed_date}, длина={len(report)} символов")
         
         # 2. Отправляем отчёт пользователю
         try:
@@ -175,13 +245,12 @@ async def close_day_for_user(bot, chat_id: int, user_state: UserState = None) ->
         # 3. Сохраняем отчёт в файл
         try:
             ARCHIVE_DIR.mkdir(exist_ok=True)
-            archive_file = ARCHIVE_DIR / f"{user_state.date}.txt"
-            
-            # Добавляем chat_id в начало файла для идентификации
+            # Используем дату закрытого дня для имени файла
+            archive_file = ARCHIVE_DIR / f"{closed_date}.txt"
             with open(archive_file, "a", encoding="utf-8") as f:
                 f.write(f"\n{'='*60}\n")
                 f.write(f"chat_id: {chat_id}\n")
-                f.write(f"Дата: {user_state.date}\n")
+                f.write(f"Дата: {closed_date}\n")
                 f.write(f"{'='*60}\n\n")
                 f.write(report)
                 f.write("\n\n")
@@ -211,54 +280,191 @@ async def close_day_for_user(bot, chat_id: int, user_state: UserState = None) ->
                 )
                 logger.info(f"✅ Теговый чеклист '{tag}' удалён для chat_id={chat_id}, message_id={tag_state.checklist_message_id}")
         
-        # 6. Оставляем только невыполненные задачи для переноса
+        # 6. ЯВНО разделяем задачи на выполненные и невыполненные
         # Дневные задачи
-        unfinished_daily_tasks = [task for task in user_state.tasks if not task.done]
-        completed_daily_count = len([task for task in user_state.tasks if task.done])
+        completed_daily_tasks: List[TaskItem] = []
+        pending_daily_tasks: List[TaskItem] = []
         
-        logger.info(f"📊 Фильтрация дневных задач: всего={len(user_state.tasks)}, выполненных={completed_daily_count}, невыполненных={len(unfinished_daily_tasks)}")
+        for task in user_state.tasks:
+            if task.done:
+                completed_daily_tasks.append(task)
+            else:
+                pending_daily_tasks.append(task)
         
-        # Перенумеровываем задачи (начинаем с 1)
-        for idx, task in enumerate(unfinished_daily_tasks, start=1):
+        logger.info(f"📊 Разделение дневных задач: всего={len(user_state.tasks)}, выполненных={len(completed_daily_tasks)}, невыполненных={len(pending_daily_tasks)}")
+        
+        # Теговые чеклисты - разделяем задачи
+        completed_tag_tasks: Dict[str, List[TaskItem]] = {}  # tag -> список выполненных задач
+        pending_tag_tasks: Dict[str, List[TaskItem]] = {}    # tag -> список невыполненных задач
+        
+        for tag, tag_state in user_state.tag_checklists.items():
+            completed_in_tag: List[TaskItem] = []
+            pending_in_tag: List[TaskItem] = []
+            
+            for task in tag_state.tasks:
+                if task.done:
+                    completed_in_tag.append(task)
+                else:
+                    pending_in_tag.append(task)
+            
+            if completed_in_tag:
+                completed_tag_tasks[tag] = completed_in_tag
+            if pending_in_tag:
+                pending_tag_tasks[tag] = pending_in_tag
+            
+            logger.info(f"🔍 Тег '{tag}': всего задач={len(tag_state.tasks)}, выполненных={len(completed_in_tag)}, невыполненных={len(pending_in_tag)}")
+        
+        # 7. В состоянии оставляем ТОЛЬКО невыполненные задачи
+        # Дневные задачи
+        for idx, task in enumerate(pending_daily_tasks, start=1):
             task.item_id = idx
-        
-        user_state.tasks = unfinished_daily_tasks
+        user_state.tasks = pending_daily_tasks
         
         # Теговые чеклисты - оставляем только с невыполненными задачами
         new_tag_checklists = {}
-        for tag, tag_state in user_state.tag_checklists.items():
-            unfinished_tag_tasks = [task for task in tag_state.tasks if not task.done]
-            completed_tag_tasks_count = len([task for task in tag_state.tasks if task.done])
-            
-            logger.info(f"🔍 Тег '{tag}': всего задач={len(tag_state.tasks)}, выполненных={completed_tag_tasks_count}, невыполненных={len(unfinished_tag_tasks)}")
-            
-            if unfinished_tag_tasks:
-                # Перенумеровываем задачи
-                for idx, task in enumerate(unfinished_tag_tasks, start=1):
-                    task.item_id = idx
-                new_tag_checklists[tag] = TagChecklistState(
-                    title=tag,
-                    checklist_message_id=None,  # Будет создан новый чеклист
-                    tasks=unfinished_tag_tasks,
-                )
-                logger.info(f"  ✅ Тег '{tag}' переносится в новый день с {len(unfinished_tag_tasks)} невыполненными задачами")
-            else:
-                logger.info(f"  ⏭️ Тег '{tag}' не переносится - все задачи выполнены")
+        for tag, pending_tasks in pending_tag_tasks.items():
+            # Перенумеровываем задачи
+            for idx, task in enumerate(pending_tasks, start=1):
+                task.item_id = idx
+            new_tag_checklists[tag] = TagChecklistState(
+                title=tag,
+                checklist_message_id=None,  # Будет создан новый чеклист
+                tasks=pending_tasks,
+            )
+            logger.info(f"  ✅ Тег '{tag}' переносится в новый день с {len(pending_tasks)} невыполненными задачами")
         
         user_state.tag_checklists = new_tag_checklists
         
         # Сбрасываем checklist_message_id дневного чеклиста (будет создан новый)
         user_state.checklist_message_id = None
         
-        # ВАЖНО: НЕ меняем user_state.date и НЕ устанавливаем last_closed_date здесь
-        # Это делается в check_and_handle_new_day для идемпотентности
+        # Обновляем last_closed_date на текущую дату (локальная дата, за которую день закрыли)
+        # ВАЖНО: используем current_calculated_date, а не user_state.date, чтобы избежать проблем с устаревшей датой
+        old_date = user_state.date
+        user_state.last_closed_date = current_calculated_date
         
         # Сохраняем состояние
         save_user_state(chat_id, user_state)
-        logger.info(f"✅ День закрыт для chat_id={chat_id}: {len(unfinished_daily_tasks)} невыполненных дневных задач, {len(new_tag_checklists)} теговых чеклистов")
+        
+        # Логируем результат закрытия дня
+        completed_daily_count = len(completed_daily_tasks)
+        completed_tag_count = sum(len(tasks) for tasks in completed_tag_tasks.values())
+        pending_daily_count = len(pending_daily_tasks)
+        pending_tag_count = sum(len(tasks) for tasks in pending_tag_tasks.values())
+        
+        logger.info(f"CLOSE_DAY chat_id={chat_id} date={old_date} completed_daily={completed_daily_count} pending_daily={pending_daily_count} completed_tag={completed_tag_count} pending_tag={pending_tag_count}")
+        logger.info(f"✅ День закрыт для chat_id={chat_id}: {pending_daily_count} невыполненных дневных задач, {len(new_tag_checklists)} теговых чеклистов")
         
     except Exception as e:
         logger.error(f"❌ Ошибка при закрытии дня для chat_id={chat_id}: {e}", exc_info=True)
+
+
+def get_user_local_datetime(user_state: UserState, now: Optional[datetime] = None) -> datetime:
+    """
+    Возвращает текущее локальное datetime пользователя на основе timezone_offset_minutes.
+    """
+    if now is None:
+        now = datetime.utcnow()
+    offset_minutes = getattr(user_state, "timezone_offset_minutes", 0) or 0
+    return now + timedelta(minutes=offset_minutes)
+
+
+async def check_and_handle_day_end_for_user(bot, chat_id: int, user_state: UserState) -> None:
+    """
+    Проверяет, наступил ли конец дня для пользователя, и обрабатывает его.
+    Вызывается периодически (каждые 60 секунд) для каждого пользователя.
+    
+    Логика:
+    - Вычисляем текущее локальное datetime пользователя
+    - Если day_end_time установлено, local_date > last_closed_date и local_time >= day_end_time,
+      тогда закрываем день и открываем новый.
+    """
+    try:
+        # Проверяем, что у пользователя установлено day_end_time
+        if not user_state.day_end_time:
+            return
+        
+        # Вычисляем текущее локальное datetime пользователя
+        user_now = get_user_local_datetime(user_state)
+        local_date = user_now.date().isoformat()
+        local_time = user_now.time()
+        
+        # Парсим day_end_time
+        try:
+            h, m = map(int, user_state.day_end_time.split(":"))
+            day_end_time_obj = time(h, m)
+        except Exception:
+            logger.warning(f"⚠️ Неверный формат day_end_time для chat_id={chat_id}: {user_state.day_end_time}")
+            return
+        
+        # Условия для авто-закрытия:
+        # 1. Если local_date == last_closed_date → день уже закрыт, ничего не делаем
+        if user_state.last_closed_date == local_date:
+            logger.debug(f"⏭️ День уже закрыт для chat_id={chat_id}, last_closed_date={user_state.last_closed_date}, current_date={local_date}")
+            return
+        
+        # 2. Если last_closed_date is None и local_time >= day_end_time → закрываем первый раз
+        # 3. Если local_date > last_closed_date и local_time >= day_end_time → закрываем новый день
+        should_close = False
+        if user_state.last_closed_date is None:
+            # Первое закрытие дня
+            if local_time >= day_end_time_obj:
+                should_close = True
+        elif local_date > user_state.last_closed_date:
+            # Новый день, проверяем время
+            if local_time >= day_end_time_obj:
+                should_close = True
+        
+        if not should_close:
+            logger.debug(f"⏭️ Условия для закрытия дня не выполнены для chat_id={chat_id}: last_closed_date={user_state.last_closed_date}, local_date={local_date}, local_time={local_time}, day_end_time={day_end_time_obj}")
+            return
+        
+        # Время наступило и день ещё не закрыт - закрываем день
+        logger.info(f"🔄 AUTO_DAY_CLOSE chat_id={chat_id} date={local_date} (время достигло day_end_time: {local_time} >= {day_end_time_obj})")
+        
+        # Закрываем день (close_day_for_user сам установит last_closed_date)
+        await close_day_for_user(bot, chat_id, user_state)
+        
+        # Перезагружаем состояние после закрытия
+        from state import load_user_state
+        user_state = load_user_state(chat_id)
+        if not user_state:
+            logger.error(f"❌ Не удалось загрузить user_state после close_day_for_user для chat_id={chat_id}")
+            return
+        
+        # Проверяем, что день действительно закрыт
+        if user_state.last_closed_date != local_date:
+            logger.warning(f"⚠️ После close_day_for_user last_closed_date не обновлён: ожидали {local_date}, получили {user_state.last_closed_date}")
+            return
+        
+        # Вычисляем дату нового дня (следующий день после закрытого)
+        from datetime import datetime, timedelta
+        closed_date_obj = datetime.strptime(user_state.last_closed_date, "%Y-%m-%d").date()
+        next_date_obj = closed_date_obj + timedelta(days=1)
+        next_date = next_date_obj.isoformat()
+        
+        # ЗАЩИТА ОТ ДВОЙНОГО ОТКРЫТИЯ: проверяем, не открыт ли уже день для этой даты
+        if user_state.last_opened_date == next_date:
+            logger.info(f"⏭️ Новый день уже открыт для chat_id={chat_id}, last_opened_date={user_state.last_opened_date}, next_date={next_date}")
+            return
+        
+        # Открываем новый день (start_new_day_for_user сам установит last_opened_date)
+        await start_new_day_for_user(bot, chat_id, user_state)
+        
+        # Перезагружаем состояние после открытия
+        user_state = load_user_state(chat_id)
+        if not user_state:
+            logger.error(f"❌ Не удалось загрузить user_state после start_new_day_for_user для chat_id={chat_id}")
+            return
+        
+        # Проверяем, что last_opened_date обновлён (start_new_day_for_user должен был это сделать)
+        if user_state.last_opened_date != next_date:
+            logger.warning(f"⚠️ После start_new_day_for_user last_opened_date не обновлён: ожидали {next_date}, получили {user_state.last_opened_date}")
+        
+        logger.info(f"🔄 AUTO_NEW_DAY chat_id={chat_id} date={next_date} completed_daily={len([t for t in user_state.tasks if t.done])} pending_daily={len([t for t in user_state.tasks if not t.done])} tag_checklists={len(user_state.tag_checklists)}")
+            
+    except Exception as e:
+        logger.error(f"❌ Ошибка при проверке конца дня для chat_id={chat_id}: {e}", exc_info=True)
 
 
 async def check_and_handle_new_day(bot, chat_id: int, user_state: UserState) -> None:
@@ -302,20 +508,22 @@ async def check_and_handle_new_day(bot, chat_id: int, user_state: UserState) -> 
         logger.info(f"🔄 Обнаружена смена дня для chat_id={chat_id}: {user_state.date} → {current_date}")
         
         # День сменился → закрываем старый
+        # ВАЖНО: close_day_for_user сам установит last_closed_date, не трогаем его здесь
         if user_state.last_closed_date != user_state.date:
             logger.info(f"🔄 Закрытие дня для chat_id={chat_id}: last_closed_date={user_state.last_closed_date}, date={user_state.date}")
             await close_day_for_user(bot, chat_id, user_state)
-            user_state.last_closed_date = user_state.date
-            save_user_state(chat_id, user_state)
+            # Перезагружаем состояние после закрытия
+            from state import load_user_state
+            user_state = load_user_state(chat_id)
+            if not user_state:
+                logger.error(f"❌ Не удалось загрузить user_state после close_day_for_user для chat_id={chat_id}")
+                return
         
         # Открываем новый день
-        user_state.date = current_date
-        
+        # ВАЖНО: start_new_day_for_user сам установит date и last_opened_date, не трогаем их здесь
         if user_state.last_opened_date != current_date:
             logger.info(f"🔄 Открытие нового дня для chat_id={chat_id}: last_opened_date={user_state.last_opened_date}, current={current_date}")
             await start_new_day_for_user(bot, chat_id, user_state)
-            user_state.last_opened_date = current_date
-            save_user_state(chat_id, user_state)
             
     except Exception as e:
         logger.error(f"❌ Ошибка при проверке смены дня для chat_id={chat_id}: {e}", exc_info=True)
@@ -327,6 +535,9 @@ async def start_new_day_for_user(bot, chat_id: int, user_state: UserState) -> No
     - Вычисляет новую дату на основе локального времени пользователя
     - Создаёт новый дневной чеклист из невыполненных задач (которые остались после close_day_for_user)
     - Создаёт теговые чеклисты для невыполненных задач
+    
+    ВАЖНО: предполагает, что в user_state к моменту вызова уже хранятся только невыполненные задачи
+    (после close_day_for_user). Выполненные задачи уже "ушли" в текстовый отчёт.
     """
     try:
         # Вычисляем текущую дату пользователя на основе локального времени
@@ -346,24 +557,47 @@ async def start_new_day_for_user(bot, chat_id: int, user_state: UserState) -> No
         if current_date != today_date:
             logger.info(f"🔄 Обновление даты: {current_date} → {today_date}")
         
+        # ВАЖНО: устанавливаем last_opened_date сразу после обновления даты
+        user_state.last_opened_date = today_date
+        
+        # ВАЖНО: сохраняем дату ДО создания чеклиста, чтобы create_checklist_for_user использовал правильную дату
+        save_user_state(chat_id, user_state)
+        
+        # Проверяем, что работаем только с невыполненными задачами
+        # (которые остались после close_day_for_user)
+        pending_daily_count = len(user_state.tasks)
+        pending_tag_count = sum(len(tag_state.tasks) for tag_state in user_state.tag_checklists.values())
+        logger.info(f"📊 Невыполненные задачи для нового дня: дневных={pending_daily_count}, теговых чеклистов={len(user_state.tag_checklists)}")
+        
         # Если нет невыполненных задач, добавляем автоматическую задачу
         if not user_state.tasks:
             first_task = TaskItem(item_id=1, text="улыбнуться себе в зеркало", done=False)
             user_state.tasks = [first_task]
             save_user_state(chat_id, user_state)
+            logger.info(f"➕ Добавлена автоматическая задача для нового дня")
         
-        # Создаём новый дневной чеклист (checklist_message_id уже сброшен в close_day_for_user)
+        # Создаём новый дневной чеклист из невыполненных задач
+        # (checklist_message_id уже сброшен в close_day_for_user)
+        # ВАЖНО: create_checklist_for_user теперь использует актуальную дату из user_state.date
         await create_checklist_for_user(bot, chat_id, user_state)
         
         # Создаём теговые чеклисты для невыполненных задач
+        # (все задачи в tag_checklists уже невыполненные после close_day_for_user)
         for tag, tag_state in user_state.tag_checklists.items():
             if tag_state.tasks:
-                # Восстанавливаем чеклист из уже существующих задач (не добавляем их снова)
+                # Восстанавливаем чеклист из уже существующих невыполненных задач
                 await rebuild_tag_checklist_for_user(bot, chat_id, user_state, tag)
+                logger.info(f"✅ Теговый чеклист '{tag}' восстановлен с {len(tag_state.tasks)} невыполненными задачами")
         
-        # Сохраняем состояние (last_opened_date обновляется в check_and_handle_new_day или handle_force_newday)
-        save_user_state(chat_id, user_state)
-        logger.info(f"✅ Новый день создан для chat_id={chat_id}, дата={current_date}")
+        # Логируем результат открытия дня
+        # ВАЖНО: last_opened_date уже установлен выше, сразу после обновления user_state.date
+        pending_daily_count = len([t for t in user_state.tasks if not t.done])
+        completed_daily_count = len([t for t in user_state.tasks if t.done])
+        pending_tag_count = sum(len([t for t in tag_state.tasks if not t.done]) for tag_state in user_state.tag_checklists.values())
+        completed_tag_count = sum(len([t for t in tag_state.tasks if t.done]) for tag_state in user_state.tag_checklists.values())
+        
+        logger.info(f"AUTO_NEW_DAY chat_id={chat_id} date={today_date} completed_daily={completed_daily_count} pending_daily={pending_daily_count} completed_tag={completed_tag_count} pending_tag={pending_tag_count} tag_checklists={len(user_state.tag_checklists)} last_opened_date={user_state.last_opened_date}")
+        logger.info(f"✅ Новый день создан для chat_id={chat_id}, дата={today_date}")
         
     except Exception as e:
         logger.error(f"❌ Ошибка при создании нового дня для chat_id={chat_id}: {e}", exc_info=True)
@@ -404,6 +638,23 @@ async def handle_user_midnight(context) -> None:
         
         logger.info(f"🕛 Смена дня для пользователя chat_id={chat_id} (midnight job)")
         
+        # ЗАЩИТА ОТ ДВОЙНОГО ЗАКРЫТИЯ: вычисляем текущую дату пользователя
+        from datetime import datetime, timedelta
+        now = datetime.utcnow()
+        offset_minutes = getattr(user_state, "timezone_offset_minutes", 0) or 0
+        user_now = now + timedelta(minutes=offset_minutes)
+        current_local_date = user_now.date().isoformat()
+        
+        # Если день уже закрыт для этой даты, пропускаем
+        if user_state.last_closed_date == current_local_date:
+            logger.info(f"⏭️ День уже закрыт для chat_id={chat_id}, last_closed_date={user_state.last_closed_date}, current_date={current_local_date}")
+            # Всё равно перепланируем job на следующий день
+            from helpers_daily import schedule_user_midnight_job
+            job_queue = getattr(context, 'job_queue', None) or (getattr(context.application, 'job_queue', None) if hasattr(context, 'application') else None)
+            if job_queue:
+                schedule_user_midnight_job(job_queue, chat_id, user_state)
+            return
+        
         # 1. Закрываем день
         await close_day_for_user(bot, chat_id, user_state)
         
@@ -411,6 +662,25 @@ async def handle_user_midnight(context) -> None:
         user_state = load_user_state(chat_id)
         if not user_state:
             logger.error(f"❌ handle_user_midnight: не удалось загрузить user_state после close_day_for_user для chat_id={chat_id}")
+            return
+        
+        # Проверяем, что день действительно закрыт
+        if user_state.last_closed_date != current_local_date:
+            logger.warning(f"⚠️ После close_day_for_user last_closed_date не обновлён: ожидали {current_local_date}, получили {user_state.last_closed_date}")
+        
+        # Вычисляем дату нового дня (следующий день после закрытого)
+        closed_date_obj = datetime.strptime(user_state.last_closed_date, "%Y-%m-%d").date()
+        next_date_obj = closed_date_obj + timedelta(days=1)
+        next_date = next_date_obj.isoformat()
+        
+        # ЗАЩИТА ОТ ДВОЙНОГО ОТКРЫТИЯ: проверяем, не открыт ли уже день для этой даты
+        if user_state.last_opened_date == next_date:
+            logger.info(f"⏭️ Новый день уже открыт для chat_id={chat_id}, last_opened_date={user_state.last_opened_date}, next_date={next_date}")
+            # Всё равно перепланируем job на следующий день
+            from helpers_daily import schedule_user_midnight_job
+            job_queue = getattr(context, 'job_queue', None) or (getattr(context.application, 'job_queue', None) if hasattr(context, 'application') else None)
+            if job_queue:
+                schedule_user_midnight_job(job_queue, chat_id, user_state)
             return
         
         # 2. Открываем новый день
@@ -421,6 +691,10 @@ async def handle_user_midnight(context) -> None:
         if not user_state:
             logger.error(f"❌ handle_user_midnight: не удалось загрузить user_state после start_new_day_for_user для chat_id={chat_id}")
             return
+        
+        # ВАЖНО: last_opened_date уже установлен в start_new_day_for_user, не трогаем его здесь
+        
+        logger.info(f"🔄 AUTO_NEW_DAY chat_id={chat_id} date={next_date} completed_daily={len([t for t in user_state.tasks if t.done])} pending_daily={len([t for t in user_state.tasks if not t.done])} tag_checklists={len(user_state.tag_checklists)}")
         
         # 3. Перепланируем следующий запуск через 24 часа
         job_queue = getattr(context, 'job_queue', None)

@@ -53,7 +53,7 @@ def init_db():
     """)
     
     # Добавляем колонки, если их нет (для существующих БД)
-    for column in ["tag_checklists", "last_closed_date", "last_opened_date", "timezone_offset_minutes", "next_rollover_job_name"]:
+    for column in ["tag_checklists", "last_closed_date", "last_opened_date", "timezone_offset_minutes", "next_rollover_job_name", "day_end_time"]:
         try:
             if column == "timezone_offset_minutes":
                 cursor.execute(f"ALTER TABLE user_state ADD COLUMN {column} INTEGER DEFAULT 0")

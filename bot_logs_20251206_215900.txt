@@ -1,0 +1,242 @@
+2025-12-06 21:56:10,205 - __main__ - INFO - Создан резервный бэкап состояния: state_backup_20251206_215610.db
+2025-12-06 21:56:10,207 - __main__ - INFO - ✅ База данных инициализирована
+2025-12-06 21:56:10,207 - __main__ - INFO - DEBUG: BOT_TOKEN загружен (длина: 46 символов)
+2025-12-06 21:56:10,240 - __main__ - INFO - 🚀 Запуск бота, версия 0.3.0
+2025-12-06 21:56:10,240 - __main__ - INFO - 🤖 Бот запускается...
+2025-12-06 21:56:10,240 - __main__ - INFO - Ожидаю business_message с бизнес-аккаунта...
+2025-12-06 21:56:10,669 - httpx - INFO - HTTP Request: POST https://api.telegram.org/bot8518575676:AAG7H6y6_vUyTMmMr3nMJzkjN55r02NUeOY/getMe "HTTP/1.1 200 OK"
+2025-12-06 21:56:13,675 - apscheduler.scheduler - INFO - Adding job tentatively -- it will be properly scheduled when the scheduler starts
+2025-12-06 21:56:13,675 - __main__ - INFO - ✅ Настроена периодическая проверка конца дня (post_init): каждые 60 секунд
+2025-12-06 21:56:13,676 - __main__ - INFO - ✅ Восстановлено 0 индивидуальных midnight job'ов для существующих пользователей
+2025-12-06 21:56:13,821 - httpx - INFO - HTTP Request: POST https://api.telegram.org/bot8518575676:AAG7H6y6_vUyTMmMr3nMJzkjN55r02NUeOY/deleteWebhook "HTTP/1.1 200 OK"
+2025-12-06 21:56:13,823 - apscheduler.scheduler - INFO - Added job "check_day_rollover" to job store "default"
+2025-12-06 21:56:13,824 - apscheduler.scheduler - INFO - Scheduler started
+2025-12-06 21:56:13,824 - telegram.ext.Application - INFO - Application started
+2025-12-06 21:56:24,353 - httpx - INFO - HTTP Request: POST https://api.telegram.org/bot8518575676:AAG7H6y6_vUyTMmMr3nMJzkjN55r02NUeOY/getUpdates "HTTP/1.1 200 OK"
+2025-12-06 21:56:34,481 - httpx - INFO - HTTP Request: POST https://api.telegram.org/bot8518575676:AAG7H6y6_vUyTMmMr3nMJzkjN55r02NUeOY/getUpdates "HTTP/1.1 200 OK"
+2025-12-06 21:56:44,585 - httpx - INFO - HTTP Request: POST https://api.telegram.org/bot8518575676:AAG7H6y6_vUyTMmMr3nMJzkjN55r02NUeOY/getUpdates "HTTP/1.1 200 OK"
+2025-12-06 21:56:51,426 - httpx - INFO - HTTP Request: POST https://api.telegram.org/bot8518575676:AAG7H6y6_vUyTMmMr3nMJzkjN55r02NUeOY/getUpdates "HTTP/1.1 200 OK"
+2025-12-06 21:56:51,432 - __main__ - INFO - DEBUG: 📥 Входящее обновление: тип=business_message, business_chat=68693040, update_id=407943173
+2025-12-06 21:56:51,432 - __main__ - INFO - 📥 Получено обновление: business_message=True, message=False, callback_query=False
+2025-12-06 21:56:51,432 - __main__ - INFO - ✅ business_message получено: chat_id=68693040, message_id=3389, text=False, caption=False
+2025-12-06 21:56:51,432 - __main__ - INFO - DEBUG: get_or_create_user_state вызван
+2025-12-06 21:56:51,432 - __main__ - INFO - DEBUG: update.business_message=True
+2025-12-06 21:56:51,433 - __main__ - INFO - DEBUG: update.message=False
+2025-12-06 21:56:51,433 - __main__ - INFO - DEBUG: update.callback_query=False
+2025-12-06 21:56:51,433 - __main__ - INFO - DEBUG: chat_id=68693040, business_connection_id=n1H4XW5oSUk_EwAAkNn5SUgSJVg
+2025-12-06 21:56:51,436 - __main__ - INFO - 🆕 Новый пользователь business_chat_id=68693040
+2025-12-06 21:56:52,153 - httpx - INFO - HTTP Request: POST https://api.telegram.org/bot8518575676:AAG7H6y6_vUyTMmMr3nMJzkjN55r02NUeOY/sendMessage "HTTP/1.1 200 OK"
+2025-12-06 21:56:52,369 - httpx - INFO - HTTP Request: POST https://api.telegram.org/bot8518575676:AAG7H6y6_vUyTMmMr3nMJzkjN55r02NUeOY/sendMessage "HTTP/1.1 200 OK"
+2025-12-06 21:56:52,650 - httpx - INFO - HTTP Request: POST https://api.telegram.org/bot8518575676:AAG7H6y6_vUyTMmMr3nMJzkjN55r02NUeOY/deleteBusinessMessages "HTTP/1.1 200 OK"
+2025-12-06 21:56:52,653 - apscheduler.scheduler - INFO - Added job "check_day_rollover" to job store "default"
+2025-12-06 21:56:52,653 - __main__ - INFO - ✅ Настроена периодическая проверка конца дня (после первого обновления): каждые 60 секунд
+2025-12-06 21:56:52,653 - __main__ - INFO - ✅ Восстановлено 0 индивидуальных midnight job'ов для существующих пользователей
+2025-12-06 21:56:52,653 - __main__ - INFO - ✅ Обработчик setup_job_on_first_update удален
+2025-12-06 21:56:57,195 - httpx - INFO - HTTP Request: POST https://api.telegram.org/bot8518575676:AAG7H6y6_vUyTMmMr3nMJzkjN55r02NUeOY/getUpdates "HTTP/1.1 200 OK"
+2025-12-06 21:56:57,199 - __main__ - INFO - DEBUG: 📥 Входящее обновление: тип=business_message, business_chat=68693040, update_id=407943174
+2025-12-06 21:56:57,199 - __main__ - INFO - 📥 Получено обновление: business_message=True, message=False, callback_query=False
+2025-12-06 21:56:57,199 - __main__ - INFO - ✅ business_message получено: chat_id=68693040, message_id=3392, text=True, caption=False
+2025-12-06 21:56:57,199 - __main__ - INFO - DEBUG: get_or_create_user_state вызван
+2025-12-06 21:56:57,199 - __main__ - INFO - DEBUG: update.business_message=True
+2025-12-06 21:56:57,199 - __main__ - INFO - DEBUG: update.message=False
+2025-12-06 21:56:57,199 - __main__ - INFO - DEBUG: update.callback_query=False
+2025-12-06 21:56:57,200 - __main__ - INFO - DEBUG: chat_id=68693040, business_connection_id=n1H4XW5oSUk_EwAAkNn5SUgSJVg
+2025-12-06 21:56:57,204 - state - INFO - SET_TIME chat_id=68693040 user_time=23:58 utc_offset=362 local_date=2025-12-06 utc_now=2025-12-06 17:56:57
+2025-12-06 21:56:57,204 - __main__ - INFO - 📅 Создание midnight job для chat_id=68693040, время=23:58, offset=362 минут
+2025-12-06 21:56:57,206 - apscheduler.scheduler - INFO - Added job "user_midnight_68693040" to job store "default"
+2025-12-06 21:56:57,207 - helpers_daily - INFO - ✅ Midnight job запланирован для chat_id=68693040: через 2 минут (время пользователя: 23:58)
+2025-12-06 21:56:57,210 - helpers_checklist - INFO - 🔨 Начинаю создание чеклиста для chat_id=68693040
+2025-12-06 21:56:57,212 - helpers_checklist - INFO - 📊 Создание чеклиста: всего задач=1, выполненных=0, невыполненных=1
+2025-12-06 21:56:57,212 - helpers_checklist - INFO - 📤 Отправляю чеклист для chat_id=68693040, title='#6дек_сб', задач=1
+2025-12-06 21:56:57,421 - httpx - INFO - HTTP Request: POST https://api.telegram.org/bot8518575676:AAG7H6y6_vUyTMmMr3nMJzkjN55r02NUeOY/sendChecklist "HTTP/1.1 200 OK"
+2025-12-06 21:56:57,427 - helpers_checklist - INFO - ✅ Чеклист создан для chat_id=68693040, message_id=3393
+2025-12-06 21:56:57,653 - httpx - INFO - HTTP Request: POST https://api.telegram.org/bot8518575676:AAG7H6y6_vUyTMmMr3nMJzkjN55r02NUeOY/sendMessage "HTTP/1.1 200 OK"
+2025-12-06 21:56:57,818 - httpx - INFO - HTTP Request: POST https://api.telegram.org/bot8518575676:AAG7H6y6_vUyTMmMr3nMJzkjN55r02NUeOY/deleteBusinessMessages "HTTP/1.1 200 OK"
+2025-12-06 21:56:57,983 - httpx - INFO - HTTP Request: POST https://api.telegram.org/bot8518575676:AAG7H6y6_vUyTMmMr3nMJzkjN55r02NUeOY/deleteBusinessMessages "HTTP/1.1 200 OK"
+2025-12-06 21:56:58,170 - httpx - INFO - HTTP Request: POST https://api.telegram.org/bot8518575676:AAG7H6y6_vUyTMmMr3nMJzkjN55r02NUeOY/deleteBusinessMessages "HTTP/1.1 200 OK"
+2025-12-06 21:56:58,347 - httpx - INFO - HTTP Request: POST https://api.telegram.org/bot8518575676:AAG7H6y6_vUyTMmMr3nMJzkjN55r02NUeOY/deleteBusinessMessages "HTTP/1.1 200 OK"
+2025-12-06 21:57:01,749 - httpx - INFO - HTTP Request: POST https://api.telegram.org/bot8518575676:AAG7H6y6_vUyTMmMr3nMJzkjN55r02NUeOY/getUpdates "HTTP/1.1 200 OK"
+2025-12-06 21:57:01,753 - __main__ - INFO - DEBUG: 📥 Входящее обновление: тип=business_message, business_chat=68693040, update_id=407943175
+2025-12-06 21:57:01,753 - __main__ - INFO - 📥 Получено обновление: business_message=True, message=False, callback_query=False
+2025-12-06 21:57:01,754 - __main__ - INFO - ✅ business_message получено: chat_id=68693040, message_id=3395, text=True, caption=False
+2025-12-06 21:57:01,754 - __main__ - INFO - DEBUG: get_or_create_user_state вызван
+2025-12-06 21:57:01,754 - __main__ - INFO - DEBUG: update.business_message=True
+2025-12-06 21:57:01,754 - __main__ - INFO - DEBUG: update.message=False
+2025-12-06 21:57:01,754 - __main__ - INFO - DEBUG: update.callback_query=False
+2025-12-06 21:57:01,754 - __main__ - INFO - DEBUG: chat_id=68693040, business_connection_id=n1H4XW5oSUk_EwAAkNn5SUgSJVg
+2025-12-06 21:57:01,754 - helpers_checklist - INFO - ⏭️ Чеклист уже существует для chat_id=68693040, message_id=3393, дата актуальна (2025-12-06)
+2025-12-06 21:57:01,965 - httpx - INFO - HTTP Request: POST https://api.telegram.org/bot8518575676:AAG7H6y6_vUyTMmMr3nMJzkjN55r02NUeOY/sendMessage "HTTP/1.1 200 OK"
+2025-12-06 21:57:01,968 - apscheduler.scheduler - INFO - Added job "auto-skip-68693040" to job store "default"
+2025-12-06 21:57:01,971 - helpers_pending - INFO - ✅ Tag flow запущен для chat_id=68693040, message_id=3396
+2025-12-06 21:57:03,461 - httpx - INFO - HTTP Request: POST https://api.telegram.org/bot8518575676:AAG7H6y6_vUyTMmMr3nMJzkjN55r02NUeOY/getUpdates "HTTP/1.1 200 OK"
+2025-12-06 21:57:03,465 - __main__ - INFO - DEBUG: 📥 Входящее обновление: тип=callback_query, callback_chat=68693040, update_id=407943176
+2025-12-06 21:57:03,465 - __main__ - INFO - 📥 Получено обновление: business_message=False, message=False, callback_query=True
+2025-12-06 21:57:03,645 - httpx - INFO - HTTP Request: POST https://api.telegram.org/bot8518575676:AAG7H6y6_vUyTMmMr3nMJzkjN55r02NUeOY/answerCallbackQuery "HTTP/1.1 200 OK"
+2025-12-06 21:57:03,647 - apscheduler.scheduler - INFO - Removed job 4c635cbed77d472da91b4e905afa5b4b
+2025-12-06 21:57:03,651 - helpers_pending - INFO - 📋 Задач в списке: 2
+2025-12-06 21:57:03,840 - httpx - INFO - HTTP Request: POST https://api.telegram.org/bot8518575676:AAG7H6y6_vUyTMmMr3nMJzkjN55r02NUeOY/editMessageChecklist "HTTP/1.1 200 OK"
+2025-12-06 21:57:03,846 - helpers_pending - INFO - ✅ Задача добавлена в чеклист без тега для chat_id=68693040: 'суп'
+2025-12-06 21:57:04,036 - httpx - INFO - HTTP Request: POST https://api.telegram.org/bot8518575676:AAG7H6y6_vUyTMmMr3nMJzkjN55r02NUeOY/deleteBusinessMessages "HTTP/1.1 200 OK"
+2025-12-06 21:57:04,206 - httpx - INFO - HTTP Request: POST https://api.telegram.org/bot8518575676:AAG7H6y6_vUyTMmMr3nMJzkjN55r02NUeOY/deleteBusinessMessages "HTTP/1.1 200 OK"
+2025-12-06 21:57:06,731 - httpx - INFO - HTTP Request: POST https://api.telegram.org/bot8518575676:AAG7H6y6_vUyTMmMr3nMJzkjN55r02NUeOY/getUpdates "HTTP/1.1 200 OK"
+2025-12-06 21:57:06,735 - __main__ - INFO - DEBUG: 📥 Входящее обновление: тип=business_message, business_chat=68693040, update_id=407943177
+2025-12-06 21:57:06,735 - __main__ - INFO - 📥 Получено обновление: business_message=True, message=False, callback_query=False
+2025-12-06 21:57:06,735 - __main__ - INFO - ✅ business_message получено: chat_id=68693040, message_id=3397, text=True, caption=False
+2025-12-06 21:57:06,735 - __main__ - INFO - DEBUG: get_or_create_user_state вызван
+2025-12-06 21:57:06,736 - __main__ - INFO - DEBUG: update.business_message=True
+2025-12-06 21:57:06,736 - __main__ - INFO - DEBUG: update.message=False
+2025-12-06 21:57:06,736 - __main__ - INFO - DEBUG: update.callback_query=False
+2025-12-06 21:57:06,736 - __main__ - INFO - DEBUG: chat_id=68693040, business_connection_id=n1H4XW5oSUk_EwAAkNn5SUgSJVg
+2025-12-06 21:57:06,736 - helpers_checklist - INFO - ⏭️ Чеклист уже существует для chat_id=68693040, message_id=3393, дата актуальна (2025-12-06)
+2025-12-06 21:57:06,965 - httpx - INFO - HTTP Request: POST https://api.telegram.org/bot8518575676:AAG7H6y6_vUyTMmMr3nMJzkjN55r02NUeOY/sendMessage "HTTP/1.1 200 OK"
+2025-12-06 21:57:06,968 - apscheduler.scheduler - INFO - Added job "auto-skip-68693040" to job store "default"
+2025-12-06 21:57:06,971 - helpers_pending - INFO - ✅ Tag flow запущен для chat_id=68693040, message_id=3398
+2025-12-06 21:57:09,522 - httpx - INFO - HTTP Request: POST https://api.telegram.org/bot8518575676:AAG7H6y6_vUyTMmMr3nMJzkjN55r02NUeOY/getUpdates "HTTP/1.1 200 OK"
+2025-12-06 21:57:09,525 - __main__ - INFO - DEBUG: 📥 Входящее обновление: тип=business_message, business_chat=68693040, update_id=407943178
+2025-12-06 21:57:09,526 - __main__ - INFO - 📥 Получено обновление: business_message=True, message=False, callback_query=False
+2025-12-06 21:57:09,526 - __main__ - INFO - ✅ business_message получено: chat_id=68693040, message_id=3399, text=True, caption=False
+2025-12-06 21:57:09,526 - __main__ - INFO - DEBUG: get_or_create_user_state вызван
+2025-12-06 21:57:09,526 - __main__ - INFO - DEBUG: update.business_message=True
+2025-12-06 21:57:09,526 - __main__ - INFO - DEBUG: update.message=False
+2025-12-06 21:57:09,526 - __main__ - INFO - DEBUG: update.callback_query=False
+2025-12-06 21:57:09,526 - __main__ - INFO - DEBUG: chat_id=68693040, business_connection_id=n1H4XW5oSUk_EwAAkNn5SUgSJVg
+2025-12-06 21:57:09,526 - helpers_checklist - INFO - 📤 Создаю чеклист по тегу '#мити' для chat_id=68693040
+2025-12-06 21:57:09,834 - httpx - INFO - HTTP Request: POST https://api.telegram.org/bot8518575676:AAG7H6y6_vUyTMmMr3nMJzkjN55r02NUeOY/sendChecklist "HTTP/1.1 200 OK"
+2025-12-06 21:57:09,840 - helpers_checklist - INFO - ✅ Чеклист по тегу '#мити' создан для chat_id=68693040, message_id=3400, item_id=1
+2025-12-06 21:57:09,840 - helpers_pending - INFO - ✅ Задача добавлена в чеклист по тегу '#мити' для chat_id=68693040: 'суп'
+2025-12-06 21:57:10,151 - httpx - INFO - HTTP Request: POST https://api.telegram.org/bot8518575676:AAG7H6y6_vUyTMmMr3nMJzkjN55r02NUeOY/deleteBusinessMessages "HTTP/1.1 200 OK"
+2025-12-06 21:57:10,370 - httpx - INFO - HTTP Request: POST https://api.telegram.org/bot8518575676:AAG7H6y6_vUyTMmMr3nMJzkjN55r02NUeOY/deleteBusinessMessages "HTTP/1.1 200 OK"
+2025-12-06 21:57:10,561 - httpx - INFO - HTTP Request: POST https://api.telegram.org/bot8518575676:AAG7H6y6_vUyTMmMr3nMJzkjN55r02NUeOY/deleteBusinessMessages "HTTP/1.1 200 OK"
+2025-12-06 21:57:12,914 - httpx - INFO - HTTP Request: POST https://api.telegram.org/bot8518575676:AAG7H6y6_vUyTMmMr3nMJzkjN55r02NUeOY/getUpdates "HTTP/1.1 200 OK"
+2025-12-06 21:57:12,915 - __main__ - INFO - DEBUG: 📥 Входящее обновление: тип=business_message, business_chat=68693040, update_id=407943179
+2025-12-06 21:57:12,915 - __main__ - INFO - 📥 Получено обновление: business_message=True, message=False, callback_query=False
+2025-12-06 21:57:12,915 - __main__ - INFO - ✅ business_message получено: chat_id=68693040, message_id=3401, text=True, caption=False
+2025-12-06 21:57:12,915 - __main__ - INFO - DEBUG: get_or_create_user_state вызван
+2025-12-06 21:57:12,915 - __main__ - INFO - DEBUG: update.business_message=True
+2025-12-06 21:57:12,915 - __main__ - INFO - DEBUG: update.message=False
+2025-12-06 21:57:12,915 - __main__ - INFO - DEBUG: update.callback_query=False
+2025-12-06 21:57:12,915 - __main__ - INFO - DEBUG: chat_id=68693040, business_connection_id=n1H4XW5oSUk_EwAAkNn5SUgSJVg
+2025-12-06 21:57:12,916 - helpers_checklist - INFO - ⏭️ Чеклист уже существует для chat_id=68693040, message_id=3393, дата актуальна (2025-12-06)
+2025-12-06 21:57:13,133 - httpx - INFO - HTTP Request: POST https://api.telegram.org/bot8518575676:AAG7H6y6_vUyTMmMr3nMJzkjN55r02NUeOY/sendMessage "HTTP/1.1 200 OK"
+2025-12-06 21:57:13,136 - apscheduler.scheduler - INFO - Added job "auto-skip-68693040" to job store "default"
+2025-12-06 21:57:13,139 - helpers_pending - INFO - ✅ Tag flow запущен для chat_id=68693040, message_id=3402
+2025-12-06 21:57:13,674 - apscheduler.executors.default - INFO - Running job "check_day_rollover (trigger: interval[0:01:00], next run at: 2025-12-06 17:58:13 UTC)" (scheduled at 2025-12-06 17:57:13.672562+00:00)
+2025-12-06 21:57:13,677 - __main__ - INFO - AUTO_DAY_CLOSE chat_id=68693040 local_date=2025-12-06 (время достигло day_end_time: 23:59:13.677339 >= 23:58:00)
+2025-12-06 21:57:13,677 - apscheduler.executors.default - INFO - Job "check_day_rollover (trigger: interval[0:01:00], next run at: 2025-12-06 17:58:13 UTC)" executed successfully
+2025-12-06 21:57:14,881 - httpx - INFO - HTTP Request: POST https://api.telegram.org/bot8518575676:AAG7H6y6_vUyTMmMr3nMJzkjN55r02NUeOY/getUpdates "HTTP/1.1 200 OK"
+2025-12-06 21:57:14,891 - __main__ - INFO - DEBUG: 📥 Входящее обновление: тип=callback_query, callback_chat=68693040, update_id=407943180
+2025-12-06 21:57:14,891 - __main__ - INFO - 📥 Получено обновление: business_message=False, message=False, callback_query=True
+2025-12-06 21:57:15,058 - httpx - INFO - HTTP Request: POST https://api.telegram.org/bot8518575676:AAG7H6y6_vUyTMmMr3nMJzkjN55r02NUeOY/answerCallbackQuery "HTTP/1.1 200 OK"
+2025-12-06 21:57:15,060 - apscheduler.scheduler - INFO - Removed job 94a5dc748b50422e86e664ee6f6a9409
+2025-12-06 21:57:15,060 - apscheduler.scheduler - INFO - Removed job cc458390866b4c9f9fe95e12372eb946
+2025-12-06 21:57:15,303 - httpx - INFO - HTTP Request: POST https://api.telegram.org/bot8518575676:AAG7H6y6_vUyTMmMr3nMJzkjN55r02NUeOY/editMessageChecklist "HTTP/1.1 200 OK"
+2025-12-06 21:57:15,306 - helpers_checklist - INFO - ✅ Задача добавлена в чеклист по тегу '#мити' для chat_id=68693040: 'вау'
+2025-12-06 21:57:15,306 - helpers_pending - INFO - ✅ Задача добавлена в чеклист по тегу '#мити' для chat_id=68693040: 'вау'
+2025-12-06 21:57:15,486 - httpx - INFO - HTTP Request: POST https://api.telegram.org/bot8518575676:AAG7H6y6_vUyTMmMr3nMJzkjN55r02NUeOY/deleteBusinessMessages "HTTP/1.1 200 OK"
+2025-12-06 21:57:15,661 - httpx - INFO - HTTP Request: POST https://api.telegram.org/bot8518575676:AAG7H6y6_vUyTMmMr3nMJzkjN55r02NUeOY/deleteBusinessMessages "HTTP/1.1 200 OK"
+2025-12-06 21:57:18,522 - httpx - INFO - HTTP Request: POST https://api.telegram.org/bot8518575676:AAG7H6y6_vUyTMmMr3nMJzkjN55r02NUeOY/getUpdates "HTTP/1.1 200 OK"
+2025-12-06 21:57:18,526 - __main__ - INFO - DEBUG: 📥 Входящее обновление: тип=business_message, business_chat=68693040, update_id=407943181
+2025-12-06 21:57:18,526 - __main__ - INFO - 📥 Получено обновление: business_message=True, message=False, callback_query=False
+2025-12-06 21:57:18,526 - __main__ - INFO - ✅ business_message получено: chat_id=68693040, message_id=3403, text=False, caption=False
+2025-12-06 21:57:18,526 - __main__ - INFO - 📋 Обнаружено событие изменения состояния чеклиста для chat_id=68693040
+2025-12-06 21:57:18,527 - helpers_checklist - ERROR - ⚠️ Не удалось определить исходный чеклист для chat_id=68693040: нет reply_to_message. Событие безопасно пропущено. message_id события=3403
+2025-12-06 21:57:18,688 - httpx - INFO - HTTP Request: POST https://api.telegram.org/bot8518575676:AAG7H6y6_vUyTMmMr3nMJzkjN55r02NUeOY/getUpdates "HTTP/1.1 200 OK"
+2025-12-06 21:57:18,692 - __main__ - INFO - DEBUG: 📥 Входящее обновление: тип=business_message, business_chat=68693040, update_id=407943182
+2025-12-06 21:57:18,692 - __main__ - INFO - 📥 Получено обновление: business_message=True, message=False, callback_query=False
+2025-12-06 21:57:18,692 - __main__ - INFO - ✅ business_message получено: chat_id=68693040, message_id=3404, text=False, caption=False
+2025-12-06 21:57:18,692 - __main__ - INFO - 📋 Обнаружено событие изменения состояния чеклиста для chat_id=68693040
+2025-12-06 21:57:18,692 - helpers_checklist - ERROR - ⚠️ Не удалось определить исходный чеклист для chat_id=68693040: нет reply_to_message. Событие безопасно пропущено. message_id события=3404
+2025-12-06 21:57:28,801 - httpx - INFO - HTTP Request: POST https://api.telegram.org/bot8518575676:AAG7H6y6_vUyTMmMr3nMJzkjN55r02NUeOY/getUpdates "HTTP/1.1 200 OK"
+2025-12-06 21:57:39,104 - httpx - INFO - HTTP Request: POST https://api.telegram.org/bot8518575676:AAG7H6y6_vUyTMmMr3nMJzkjN55r02NUeOY/getUpdates "HTTP/1.1 200 OK"
+2025-12-06 21:57:49,551 - httpx - INFO - HTTP Request: POST https://api.telegram.org/bot8518575676:AAG7H6y6_vUyTMmMr3nMJzkjN55r02NUeOY/getUpdates "HTTP/1.1 200 OK"
+2025-12-06 21:57:52,655 - apscheduler.executors.default - INFO - Running job "check_day_rollover (trigger: interval[0:01:00], next run at: 2025-12-06 17:58:52 UTC)" (scheduled at 2025-12-06 17:57:52.652835+00:00)
+2025-12-06 21:57:52,659 - __main__ - INFO - AUTO_DAY_CLOSE chat_id=68693040 local_date=2025-12-06 (время достигло day_end_time: 23:59:52.658972 >= 23:58:00)
+2025-12-06 21:57:52,659 - apscheduler.executors.default - INFO - Job "check_day_rollover (trigger: interval[0:01:00], next run at: 2025-12-06 17:58:52 UTC)" executed successfully
+2025-12-06 21:57:59,994 - httpx - INFO - HTTP Request: POST https://api.telegram.org/bot8518575676:AAG7H6y6_vUyTMmMr3nMJzkjN55r02NUeOY/getUpdates "HTTP/1.1 200 OK"
+2025-12-06 21:58:10,438 - httpx - INFO - HTTP Request: POST https://api.telegram.org/bot8518575676:AAG7H6y6_vUyTMmMr3nMJzkjN55r02NUeOY/getUpdates "HTTP/1.1 200 OK"
+2025-12-06 21:58:13,674 - apscheduler.executors.default - INFO - Running job "check_day_rollover (trigger: interval[0:01:00], next run at: 2025-12-06 17:59:13 UTC)" (scheduled at 2025-12-06 17:58:13.672562+00:00)
+2025-12-06 21:58:13,677 - __main__ - INFO - AUTO_DAY_CLOSE chat_id=68693040 local_date=2025-12-07 (дата сменилась: 2025-12-06 → 2025-12-07)
+2025-12-06 21:58:13,677 - helpers_daily - INFO - 📅 close_day_for_user: user_state.date=2025-12-06, вычисленная дата=2025-12-07, всего дневных задач=2, теговых чеклистов=1
+2025-12-06 21:58:13,678 - helpers_daily - INFO - 📊 Состояние ДО генерации отчёта: выполненных дневных=0, теговых=0
+2025-12-06 21:58:13,678 - helpers_daily - INFO - 📊 generate_daily_report: дата=2025-12-06, дневных задач всего=2, выполненных=0, теговых задач всего=2, выполненных=0
+2025-12-06 21:58:13,678 - helpers_daily - INFO - 🔍 Тег '#мити': всего задач=2, выполненных=0
+2025-12-06 21:58:13,678 - helpers_daily - INFO -   - Задача тега '#мити': item_id=1, done=False, text='суп'
+2025-12-06 21:58:13,678 - helpers_daily - INFO -   - Задача тега '#мити': item_id=2, done=False, text='вау'
+2025-12-06 21:58:13,678 - helpers_daily - INFO - ⚠️ Нет выполненных задач для отчёта: дневных=0, теговых=0
+2025-12-06 21:58:13,679 - helpers_daily - INFO - 📋 Отчёт сгенерирован для chat_id=68693040, дата=2025-12-06, длина=48 символов
+2025-12-06 21:58:14,238 - httpx - INFO - HTTP Request: POST https://api.telegram.org/bot8518575676:AAG7H6y6_vUyTMmMr3nMJzkjN55r02NUeOY/sendMessage "HTTP/1.1 200 OK"
+2025-12-06 21:58:14,239 - helpers_daily - INFO - ✅ Отчёт отправлен пользователю chat_id=68693040
+2025-12-06 21:58:14,240 - helpers_daily - INFO - ✅ Отчёт сохранён в файл: /Users/misharik/horeca_fam/archive/2025-12-06.txt
+2025-12-06 21:58:14,380 - httpx - INFO - HTTP Request: POST https://api.telegram.org/bot8518575676:AAG7H6y6_vUyTMmMr3nMJzkjN55r02NUeOY/deleteBusinessMessages "HTTP/1.1 200 OK"
+2025-12-06 21:58:14,381 - helpers_daily - INFO - ✅ Дневной чеклист удалён для chat_id=68693040, message_id=3393
+2025-12-06 21:58:14,503 - httpx - INFO - HTTP Request: POST https://api.telegram.org/bot8518575676:AAG7H6y6_vUyTMmMr3nMJzkjN55r02NUeOY/deleteBusinessMessages "HTTP/1.1 200 OK"
+2025-12-06 21:58:14,518 - helpers_daily - INFO - ✅ Теговый чеклист '#мити' удалён для chat_id=68693040, message_id=3400
+2025-12-06 21:58:14,518 - helpers_daily - INFO - 📊 Разделение дневных задач: всего=2, выполненных=0, невыполненных=2
+2025-12-06 21:58:14,518 - helpers_daily - INFO - 🔍 Тег '#мити': всего задач=2, выполненных=0, невыполненных=2
+2025-12-06 21:58:14,518 - helpers_daily - INFO -   ✅ Тег '#мити' переносится в новый день с 2 невыполненными задачами
+2025-12-06 21:58:14,526 - helpers_daily - INFO - CLOSE_DAY chat_id=68693040 date=2025-12-06 completed_daily=0 pending_daily=2 completed_tag=0 pending_tag=2
+2025-12-06 21:58:14,526 - helpers_daily - INFO - ✅ День закрыт для chat_id=68693040: 2 невыполненных дневных задач, 1 теговых чеклистов
+2025-12-06 21:58:14,526 - __main__ - WARNING - ⚠️ День не был закрыт для chat_id=68693040, last_closed_date=2025-12-06, ожидалось=2025-12-07
+2025-12-06 21:58:14,526 - apscheduler.executors.default - INFO - Job "check_day_rollover (trigger: interval[0:01:00], next run at: 2025-12-06 17:59:13 UTC)" executed successfully
+2025-12-06 21:58:20,569 - httpx - INFO - HTTP Request: POST https://api.telegram.org/bot8518575676:AAG7H6y6_vUyTMmMr3nMJzkjN55r02NUeOY/getUpdates "HTTP/1.1 200 OK"
+2025-12-06 21:58:30,709 - httpx - INFO - HTTP Request: POST https://api.telegram.org/bot8518575676:AAG7H6y6_vUyTMmMr3nMJzkjN55r02NUeOY/getUpdates "HTTP/1.1 200 OK"
+2025-12-06 21:58:40,833 - httpx - INFO - HTTP Request: POST https://api.telegram.org/bot8518575676:AAG7H6y6_vUyTMmMr3nMJzkjN55r02NUeOY/getUpdates "HTTP/1.1 200 OK"
+2025-12-06 21:58:50,967 - httpx - INFO - HTTP Request: POST https://api.telegram.org/bot8518575676:AAG7H6y6_vUyTMmMr3nMJzkjN55r02NUeOY/getUpdates "HTTP/1.1 200 OK"
+2025-12-06 21:58:52,654 - apscheduler.executors.default - INFO - Running job "check_day_rollover (trigger: interval[0:01:00], next run at: 2025-12-06 17:59:52 UTC)" (scheduled at 2025-12-06 17:58:52.652835+00:00)
+2025-12-06 21:58:52,657 - __main__ - INFO - AUTO_DAY_CLOSE chat_id=68693040 local_date=2025-12-07 (дата сменилась: 2025-12-06 → 2025-12-07)
+2025-12-06 21:58:52,657 - helpers_daily - INFO - 📅 close_day_for_user: user_state.date=2025-12-06, вычисленная дата=2025-12-07, всего дневных задач=2, теговых чеклистов=1
+2025-12-06 21:58:52,658 - helpers_daily - INFO - 📊 Состояние ДО генерации отчёта: выполненных дневных=0, теговых=0
+2025-12-06 21:58:52,658 - helpers_daily - INFO - 📊 generate_daily_report: дата=2025-12-06, дневных задач всего=2, выполненных=0, теговых задач всего=2, выполненных=0
+2025-12-06 21:58:52,658 - helpers_daily - INFO - 🔍 Тег '#мити': всего задач=2, выполненных=0
+2025-12-06 21:58:52,658 - helpers_daily - INFO -   - Задача тега '#мити': item_id=1, done=False, text='суп'
+2025-12-06 21:58:52,658 - helpers_daily - INFO -   - Задача тега '#мити': item_id=2, done=False, text='вау'
+2025-12-06 21:58:52,658 - helpers_daily - INFO - ⚠️ Нет выполненных задач для отчёта: дневных=0, теговых=0
+2025-12-06 21:58:52,658 - helpers_daily - INFO - 📋 Отчёт сгенерирован для chat_id=68693040, дата=2025-12-06, длина=48 символов
+2025-12-06 21:58:53,585 - httpx - INFO - HTTP Request: POST https://api.telegram.org/bot8518575676:AAG7H6y6_vUyTMmMr3nMJzkjN55r02NUeOY/sendMessage "HTTP/1.1 200 OK"
+2025-12-06 21:58:53,587 - helpers_daily - INFO - ✅ Отчёт отправлен пользователю chat_id=68693040
+2025-12-06 21:58:53,588 - helpers_daily - INFO - ✅ Отчёт сохранён в файл: /Users/misharik/horeca_fam/archive/2025-12-06.txt
+2025-12-06 21:58:53,588 - helpers_daily - INFO - 📊 Разделение дневных задач: всего=2, выполненных=0, невыполненных=2
+2025-12-06 21:58:53,589 - helpers_daily - INFO - 🔍 Тег '#мити': всего задач=2, выполненных=0, невыполненных=2
+2025-12-06 21:58:53,589 - helpers_daily - INFO -   ✅ Тег '#мити' переносится в новый день с 2 невыполненными задачами
+2025-12-06 21:58:53,592 - helpers_daily - INFO - CLOSE_DAY chat_id=68693040 date=2025-12-06 completed_daily=0 pending_daily=2 completed_tag=0 pending_tag=2
+2025-12-06 21:58:53,592 - helpers_daily - INFO - ✅ День закрыт для chat_id=68693040: 2 невыполненных дневных задач, 1 теговых чеклистов
+2025-12-06 21:58:53,592 - __main__ - WARNING - ⚠️ День не был закрыт для chat_id=68693040, last_closed_date=2025-12-06, ожидалось=2025-12-07
+2025-12-06 21:58:53,592 - apscheduler.executors.default - INFO - Job "check_day_rollover (trigger: interval[0:01:00], next run at: 2025-12-06 17:59:52 UTC)" executed successfully
+2025-12-06 21:58:57,206 - apscheduler.scheduler - INFO - Removed job 77475188a9344cfc9e81f2da152898d7
+2025-12-06 21:58:57,208 - apscheduler.executors.default - INFO - Running job "user_midnight_68693040 (trigger: date[2025-12-06 17:58:57 UTC], next run at: 2025-12-06 17:58:57 UTC)" (scheduled at 2025-12-06 17:58:57.204793+00:00)
+2025-12-06 21:58:57,208 - helpers_daily - INFO - 🕛 Смена дня для пользователя chat_id=68693040 (midnight job)
+2025-12-06 21:58:57,208 - helpers_daily - INFO - 📅 close_day_for_user: user_state.date=2025-12-06, вычисленная дата=2025-12-07, всего дневных задач=2, теговых чеклистов=1
+2025-12-06 21:58:57,208 - helpers_daily - INFO - 📊 Состояние ДО генерации отчёта: выполненных дневных=0, теговых=0
+2025-12-06 21:58:57,209 - helpers_daily - INFO - 📊 generate_daily_report: дата=2025-12-06, дневных задач всего=2, выполненных=0, теговых задач всего=2, выполненных=0
+2025-12-06 21:58:57,209 - helpers_daily - INFO - 🔍 Тег '#мити': всего задач=2, выполненных=0
+2025-12-06 21:58:57,209 - helpers_daily - INFO -   - Задача тега '#мити': item_id=1, done=False, text='суп'
+2025-12-06 21:58:57,209 - helpers_daily - INFO -   - Задача тега '#мити': item_id=2, done=False, text='вау'
+2025-12-06 21:58:57,209 - helpers_daily - INFO - ⚠️ Нет выполненных задач для отчёта: дневных=0, теговых=0
+2025-12-06 21:58:57,209 - helpers_daily - INFO - 📋 Отчёт сгенерирован для chat_id=68693040, дата=2025-12-06, длина=48 символов
+2025-12-06 21:58:57,438 - httpx - INFO - HTTP Request: POST https://api.telegram.org/bot8518575676:AAG7H6y6_vUyTMmMr3nMJzkjN55r02NUeOY/sendMessage "HTTP/1.1 200 OK"
+2025-12-06 21:58:57,439 - helpers_daily - INFO - ✅ Отчёт отправлен пользователю chat_id=68693040
+2025-12-06 21:58:57,440 - helpers_daily - INFO - ✅ Отчёт сохранён в файл: /Users/misharik/horeca_fam/archive/2025-12-06.txt
+2025-12-06 21:58:57,440 - helpers_daily - INFO - 📊 Разделение дневных задач: всего=2, выполненных=0, невыполненных=2
+2025-12-06 21:58:57,440 - helpers_daily - INFO - 🔍 Тег '#мити': всего задач=2, выполненных=0, невыполненных=2
+2025-12-06 21:58:57,440 - helpers_daily - INFO -   ✅ Тег '#мити' переносится в новый день с 2 невыполненными задачами
+2025-12-06 21:58:57,442 - helpers_daily - INFO - CLOSE_DAY chat_id=68693040 date=2025-12-06 completed_daily=0 pending_daily=2 completed_tag=0 pending_tag=2
+2025-12-06 21:58:57,442 - helpers_daily - INFO - ✅ День закрыт для chat_id=68693040: 2 невыполненных дневных задач, 1 теговых чеклистов
+2025-12-06 21:58:57,442 - helpers_daily - WARNING - ⚠️ После close_day_for_user last_closed_date не обновлён: ожидали 2025-12-07, получили 2025-12-06
+2025-12-06 21:58:57,442 - helpers_daily - INFO - 📅 Создание нового дня для chat_id=68693040, дата в state=2025-12-06, вычисленная дата пользователя=2025-12-07
+2025-12-06 21:58:57,442 - helpers_daily - INFO - 🔄 Обновление даты: 2025-12-06 → 2025-12-07
+2025-12-06 21:58:57,443 - helpers_daily - INFO - 📊 Невыполненные задачи для нового дня: дневных=2, теговых чеклистов=1
+2025-12-06 21:58:57,443 - helpers_checklist - INFO - 🔨 Начинаю создание чеклиста для chat_id=68693040
+2025-12-06 21:58:57,443 - helpers_checklist - INFO - 📊 Создание чеклиста: всего задач=2, выполненных=0, невыполненных=2
+2025-12-06 21:58:57,443 - helpers_checklist - INFO - 📤 Отправляю чеклист для chat_id=68693040, title='#7дек_вс', задач=2
+2025-12-06 21:58:57,649 - httpx - INFO - HTTP Request: POST https://api.telegram.org/bot8518575676:AAG7H6y6_vUyTMmMr3nMJzkjN55r02NUeOY/sendChecklist "HTTP/1.1 200 OK"
+2025-12-06 21:58:57,653 - helpers_checklist - INFO - ✅ Чеклист создан для chat_id=68693040, message_id=3408
+2025-12-06 21:58:57,653 - helpers_checklist - INFO - 📤 Восстанавливаю чеклист по тегу '#мити' для chat_id=68693040 с 2 задачами
+2025-12-06 21:58:57,872 - httpx - INFO - HTTP Request: POST https://api.telegram.org/bot8518575676:AAG7H6y6_vUyTMmMr3nMJzkjN55r02NUeOY/sendChecklist "HTTP/1.1 200 OK"
+2025-12-06 21:58:57,876 - helpers_checklist - INFO - ✅ Чеклист по тегу '#мити' восстановлен для chat_id=68693040, message_id=3409
+2025-12-06 21:58:57,876 - helpers_daily - INFO - ✅ Теговый чеклист '#мити' восстановлен с 2 невыполненными задачами
+2025-12-06 21:58:57,877 - helpers_daily - INFO - AUTO_NEW_DAY chat_id=68693040 date=2025-12-07 completed_daily=0 pending_daily=2 completed_tag=0 pending_tag=2 tag_checklists=1 last_opened_date=2025-12-07
+2025-12-06 21:58:57,877 - helpers_daily - INFO - ✅ Новый день создан для chat_id=68693040, дата=2025-12-07
+2025-12-06 21:58:57,877 - helpers_daily - INFO - 🔄 AUTO_NEW_DAY chat_id=68693040 date=2025-12-07 completed_daily=0 pending_daily=2 tag_checklists=1
+2025-12-06 21:58:57,877 - apscheduler.scheduler - INFO - Added job "user_midnight_68693040" to job store "default"
+2025-12-06 21:58:57,879 - helpers_daily - INFO - ✅ Следующий midnight job запланирован для chat_id=68693040 через 24 часа
+2025-12-06 21:58:57,879 - apscheduler.executors.default - INFO - Job "user_midnight_68693040 (trigger: date[2025-12-06 17:58:57 UTC], next run at: 2025-12-06 17:58:57 UTC)" executed successfully

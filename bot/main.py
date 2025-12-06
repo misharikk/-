@@ -152,62 +152,29 @@ def get_or_create_user_state(update: Update) -> Optional[UserState]:
 
 def is_system_or_service_business_message(bmsg) -> bool:
     """
-    Определяет, является ли business_message системным / сервисным событием,
-    которое не нужно превращать в задачу:
-    - служебные нотификации чеклиста (выполнено/отменено)
-    - системные события без полезного контента
-    - сообщения от бота и автопересылки
+    Корректная фильтрация бизнес-сообщений.
+
+    ВАЖНО:
+    События чеклиста (marked done/undone, checklist_item_state, new_checklist_item)
+    НЕЛЬЗЯ фильтровать, иначе чеклист перестаёт работать.
     """
-    # Сообщения от самого бота — никогда не считаем задачами
+    # 1. Сообщения от самого бота — фильтруем
     if getattr(bmsg, "from_user", None) and getattr(bmsg.from_user, "is_bot", False):
-        logger.info(f"🔍 Фильтр: сообщение от бота")
         return True
 
-    # Автоматические пересылки / сервисные автосообщения
+    # 2. Автоматические пересылки
     if getattr(bmsg, "is_automatic_forward", False):
-        logger.info(f"🔍 Фильтр: автоматическая пересылка")
         return True
 
-    # Сервисные сообщения (если библиотека помечает их как service)
-    if getattr(bmsg, "service", False):
-        logger.info(f"🔍 Фильтр: сервисное сообщение")
-        return True
+    # ❗️ 3. НЕ фильтруем события чеклиста — возвращаем False
+    # Это важные события для логики чеклистов — всегда пропускаем
+    if getattr(bmsg, "checklist", None) \
+       or getattr(bmsg, "checklist_tasks_done", None) \
+       or getattr(bmsg, "checklist_tasks_added", None):
+        return False
 
-    # Попробуем отфильтровать специфичные события чеклиста:
-    # если библиотека выставляет отдельные поля — можно учитывать и их
-    checklist_attrs = [
-        "new_checklist_item",
-        "new_checklist_item_state",
-        "new_checklist",
-        "checklist_item_state",
-        "checklist",
-        "update_id",
-    ]
-    for attr in checklist_attrs:
-        if hasattr(bmsg, attr) and getattr(bmsg, attr) is not None:
-            logger.info(f"🔍 Фильтр: найдено checklist-поле {attr}={getattr(bmsg, attr)}")
-            return True
-    
-    # Дополнительно проверяем любые атрибуты, которые могут указывать на системное событие
-    # Если есть атрибут, который выглядит как системный (например, содержит "checklist" или "state")
-    # НО игнорируем методы (callable объекты)
-    for attr_name in dir(bmsg):
-        if not attr_name.startswith("_"):  # Игнорируем приватные атрибуты
-            if "checklist" in attr_name.lower() or "state" in attr_name.lower():
-                try:
-                    attr_value = getattr(bmsg, attr_name, None)
-                    # Игнорируем методы (callable объекты) - это не системные поля
-                    if callable(attr_value):
-                        continue
-                    if attr_value is not None and attr_name not in checklist_attrs:
-                        # Это может быть новое системное поле
-                        logger.info(f"🔍 Фильтр: найдено системное поле {attr_name}={attr_value}")
-                        return True
-                except Exception:
-                    pass
-
-    # Если нет текста/подписи и нет медиа — скорее всего это служебное событие
-    has_text_or_caption = bool(getattr(bmsg, "text", None) or getattr(bmsg, "caption", None))
+    # 4. Если нет текста/подписи и нет медиа — это сервисное сообщение
+    has_text = bool(getattr(bmsg, "text", None) or getattr(bmsg, "caption", None))
     has_media = any([
         getattr(bmsg, "photo", None),
         getattr(bmsg, "voice", None),
@@ -217,11 +184,10 @@ def is_system_or_service_business_message(bmsg) -> bool:
         getattr(bmsg, "sticker", None),
     ])
 
-    if not has_text_or_caption and not has_media:
-        logger.info(f"🔍 Фильтр: нет текста и нет медиа")
+    if not has_text and not has_media:
         return True
 
-    # Если дошли сюда - сообщение не системное
+    # 5. Всё остальное → не системное
     return False
 
 
@@ -280,7 +246,7 @@ async def handle_first_message(update: Update, context: ContextTypes.DEFAULT_TYP
     
     user_state.asked_for_time = True
     user_state.waiting_for_time = True
-        # Обновляем состояние
+    # Обновляем состояние
     save_user_state(chat_id, user_state)
 
 
@@ -314,48 +280,177 @@ async def handle_time_command(update: Update, context: ContextTypes.DEFAULT_TYPE
     save_user_state(chat_id, user_state)
 
 
-async def handle_force_close(update: Update, context: ContextTypes.DEFAULT_TYPE, user_state: UserState) -> None:
+async def handle_force_close(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """
-    Принудительно закрывает текущий день без проверки даты.
-    Вызывает close_day_for_user напрямую, обходя проверки в check_and_handle_new_day.
+    Обработчик команды /force_close — принудительно закрывает текущий день.
+    Вызывает close_day_for_user для закрытия дня и формирования отчёта.
+    """
+    try:
+        business_msg = update.business_message
+        if not business_msg:
+            logger.warning("⚠️ handle_force_close: business_message отсутствует")
+            return
+
+        chat_id = business_msg.chat.id
+        logger.info(f"🔄 Команда /force_close вызвана для chat_id={chat_id}")
+        
+        # Загружаем актуальное состояние перед закрытием дня
+        # (чтобы получить все последние синхронизации выполненных задач)
+        from state import load_user_state
+        from helpers_daily import close_day_for_user
+        
+        fresh_user_state = load_user_state(chat_id)
+        if not fresh_user_state:
+            logger.error(f"❌ Не удалось загрузить user_state для chat_id={chat_id}")
+            return
+        
+        # Используем текущий user_state.date как "день, который закрываем"
+        close_date = fresh_user_state.date
+        if not close_date:
+            logger.warning(f"⚠️ У пользователя chat_id={chat_id} нет установленной даты")
+            await context.bot.send_message(
+                business_connection_id=fresh_user_state.business_connection_id,
+                chat_id=chat_id,
+                text="❌ Не установлена дата. Используйте команду /время для установки времени.",
+            )
+            return
+        
+        # Вызываем close_day_for_user с актуальным состоянием
+        # Функция сама:
+        # - сгенерирует отчёт (только выполненные задачи)
+        # - отправит отчёт пользователю
+        # - удалит чеклисты
+        # - оставит в состоянии только невыполненные задачи
+        # - обновит last_closed_date
+        # - сохранит состояние
+        await close_day_for_user(context.bot, chat_id, fresh_user_state)
+        
+        logger.info(f"FORCE_DAY_CLOSE chat_id={chat_id} date={close_date}")
+        
+        await context.bot.send_message(
+            business_connection_id=fresh_user_state.business_connection_id,
+            chat_id=chat_id,
+            text=f"✅ День закрыт. Используйте /force_newday для открытия нового дня.",
+        )
+        
+    except Exception as e:
+        logger.error(f"❌ Ошибка в handle_force_close для chat_id={business_msg.chat.id if business_msg else 'unknown'}: {e}", exc_info=True)
+
+
+async def handle_force_newday(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """
+    Обработчик команды /force_newday — принудительно открывает новый день.
+    Вызывает start_new_day_for_user для создания новых чеклистов из невыполненных задач.
+    """
+    try:
+        business_msg = update.business_message
+        if not business_msg:
+            logger.warning("⚠️ handle_force_newday: business_message отсутствует")
+            return
+
+        chat_id = business_msg.chat.id
+        logger.info(f"🔄 Команда /force_newday вызвана для chat_id={chat_id}")
+        
+        # Загружаем актуальное состояние (после close_day_for_user там только невыполненные задачи)
+        from state import load_user_state
+        from helpers_daily import start_new_day_for_user
+        
+        fresh_user_state = load_user_state(chat_id)
+        if not fresh_user_state:
+            logger.error(f"❌ Не удалось загрузить user_state для chat_id={chat_id}")
+            return
+        
+        # start_new_day_for_user:
+        # - обновит дату на актуальную (вычисленную на основе локального времени)
+        # - создаст новые чеклисты из невыполненных задач (которые остались после close_day_for_user)
+        # - сохранит состояние
+        await start_new_day_for_user(context.bot, chat_id, fresh_user_state)
+        
+        # Перезагружаем состояние после открытия нового дня
+        fresh_user_state = load_user_state(chat_id)
+        if fresh_user_state:
+            new_date = fresh_user_state.date
+            logger.info(f"FORCE_NEW_DAY chat_id={chat_id} date={new_date}")
+            
+            await context.bot.send_message(
+                business_connection_id=fresh_user_state.business_connection_id,
+                chat_id=chat_id,
+                text=f"✅ Новый день открыт (дата: {new_date}).",
+            )
+        else:
+            logger.error(f"❌ Не удалось загрузить user_state после start_new_day_for_user для chat_id={chat_id}")
+        
+    except Exception as e:
+        logger.error(f"❌ Ошибка в handle_force_newday для chat_id={business_msg.chat.id if business_msg else 'unknown'}: {e}", exc_info=True)
+
+
+async def apply_user_time(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE,
+    user_state: UserState,
+    time_str: str,
+    now_utc: datetime,
+) -> bool:
+    """
+    Применяет время пользователя через set_user_time_info и выполняет дополнительные действия:
+    - Сбрасывает waiting_for_time = False
+    - Создает midnight job для автоматического закрытия дня
+    - Создает первый чеклист, если его еще нет
+    
+    Возвращает True если время успешно применено, False если ошибка парсинга.
     """
     business_msg = update.business_message
     if not business_msg:
-        return
-
+        return False
+    
     chat_id = business_msg.chat.id
-    logger.info(f"🔄 Принудительное закрытие дня для chat_id={chat_id}")
     
-    # Загружаем актуальное состояние перед закрытием дня
-    # (чтобы получить все последние синхронизации выполненных задач)
-    from state import load_user_state
-    fresh_user_state = load_user_state(chat_id)
-    if not fresh_user_state:
-        logger.error(f"❌ Не удалось загрузить user_state для chat_id={chat_id}")
-        return
+    # Используем общую функцию для установки времени
+    from state import set_user_time_info
+    success = set_user_time_info(chat_id, time_str)
     
-    # Просто вызываем close_day_for_user с актуальным состоянием
-    # Обновление last_closed_date должно оставаться в дневной логике
-    await close_day_for_user(context.bot, chat_id, fresh_user_state)
-    save_user_state(chat_id, fresh_user_state)
-
-
-async def handle_force_newday(update: Update, context: ContextTypes.DEFAULT_TYPE, user_state: UserState) -> None:
-    """
-    Принудительно открывает новый день без проверки даты.
-    Вызывает start_new_day_for_user напрямую, обходя проверки в check_and_handle_new_day.
-    """
-    business_msg = update.business_message
-    if not business_msg:
-        return
-
-    chat_id = business_msg.chat.id
-    logger.info(f"🔄 Принудительное открытие нового дня для chat_id={chat_id}")
+    if not success:
+        return False
     
-    # start_new_day_for_user сама обновит дату на актуальную
-    # Не нужно менять user_state.date вручную
-    await start_new_day_for_user(context.bot, chat_id, user_state)
+    # Перезагружаем состояние после установки времени
+    user_state = load_user_state(chat_id)
+    if not user_state:
+        return False
+    
+    user_state.waiting_for_time = False
+    user_state.last_opened_date = user_state.date  # инициализируем
+    
+    # Поставить job на смену дня для этого пользователя
+    job_queue = None
+    try:
+        if hasattr(context, "application") and context.application:
+            job_queue = getattr(context.application, "job_queue", None)
+            if job_queue is None and hasattr(context.application, "job_queue"):
+                job_queue = context.application.job_queue
+        if job_queue is None and hasattr(context, "job_queue"):
+            job_queue = context.job_queue
+    except Exception as e:
+        logger.warning(f"⚠️ Ошибка при получении job_queue: {e}")
+    
+    if job_queue:
+        from helpers_daily import schedule_user_midnight_job
+        parsed = parse_time_string(time_str)
+        logger.info(f"📅 Создание midnight job для chat_id={chat_id}, время={parsed}, offset={user_state.timezone_offset_minutes} минут")
+        try:
+            schedule_user_midnight_job(job_queue, chat_id, user_state)
+        except Exception as e:
+            logger.error(f"❌ Ошибка при создании midnight job: {e}", exc_info=True)
+    else:
+        logger.warning(f"⚠️ job_queue отсутствует при установке времени для chat_id={chat_id}")
+        logger.warning(f"⚠️ Резервный механизм check_day_rollover будет проверять смену дня каждые 60 секунд")
+    
+    # Создаем первый чеклист, если его еще нет
+    await create_checklist_for_user(context.bot, chat_id, user_state)
+    
+    # Сохраняем состояние
     save_user_state(chat_id, user_state)
+    
+    return True
 
 
 async def handle_time_input(update: Update, context: ContextTypes.DEFAULT_TYPE, user_state: UserState) -> None:
@@ -375,10 +470,16 @@ async def handle_time_input(update: Update, context: ContextTypes.DEFAULT_TYPE, 
         )
         # Убеждаемся, что остаемся в режиме ожидания времени
         user_state.waiting_for_time = True
+        save_user_state(chat_id, user_state)
         return
     
-    parsed = parse_time_string(text)
-    if not parsed:
+    # Используем общую функцию для применения времени
+    from datetime import datetime
+    now_utc = datetime.utcnow()
+    
+    success = await apply_user_time(update, context, user_state, text, now_utc)
+    
+    if not success:
         # Сообщаем об ошибке, но НЕ меняем состояние - остаемся в ожидании времени
         await context.bot.send_message(
             business_connection_id=user_state.business_connection_id,
@@ -387,70 +488,14 @@ async def handle_time_input(update: Update, context: ContextTypes.DEFAULT_TYPE, 
         )
         # Убеждаемся, что остаемся в режиме ожидания времени
         user_state.waiting_for_time = True
+        save_user_state(chat_id, user_state)
         return
     
-    user_state.time = parsed
-    user_state.waiting_for_time = False
-    
-    # 1) Вычисляем timezone_offset_minutes на основе разницы между серверным временем и временем пользователя
-    # /время 22:45 означает "сейчас у меня локальное время 22:45"
-    from datetime import datetime, timedelta
-    now = datetime.utcnow()
-    
-    # Парсим введенное время
-    h, m = map(int, parsed.split(":"))
-    user_minutes = h * 60 + m
-    server_minutes = now.hour * 60 + now.minute
-    
-    # Вычисляем смещение
-    offset = user_minutes - server_minutes
-    
-    # Если разница больше 12 часов, корректируем на ±24 часа (берем ближайший вариант)
-    if abs(offset) > 12 * 60:
-        if offset > 0:
-            offset -= 24 * 60
-        else:
-            offset += 24 * 60
-    
-    user_state.timezone_offset_minutes = offset
-    logger.info(f"📅 Вычислен timezone_offset_minutes для chat_id={chat_id}: {offset} минут (время пользователя: {parsed}, серверное: {now.hour:02d}:{now.minute:02d})")
-    
-    # 2) Фиксируем дату на основе локального времени пользователя
-    user_now = now + timedelta(minutes=offset)
-    current_date = user_now.date().isoformat()
-    user_state.date = current_date
-    user_state.last_closed_date = current_date
-    user_state.last_opened_date = current_date
-    
-    # 2) Поставить job на смену дня для этого пользователя
-    job_queue = None
-    try:
-        if hasattr(context, "application") and context.application:
-            job_queue = getattr(context.application, "job_queue", None)
-            if job_queue is None and hasattr(context.application, "job_queue"):
-                # Пробуем получить напрямую
-                job_queue = context.application.job_queue
-        if job_queue is None and hasattr(context, "job_queue"):
-            job_queue = context.job_queue
-    except Exception as e:
-        logger.warning(f"⚠️ Ошибка при получении job_queue: {e}")
-    
-    if job_queue:
-        from helpers_daily import schedule_user_midnight_job
-        logger.info(f"📅 Создание midnight job для chat_id={chat_id}, время={parsed}, offset={offset} минут")
-        try:
-            schedule_user_midnight_job(job_queue, chat_id, user_state)
-        except Exception as e:
-            logger.error(f"❌ Ошибка при создании midnight job: {e}", exc_info=True)
-    else:
-        logger.warning(f"⚠️ job_queue отсутствует при установке времени для chat_id={chat_id}")
-        logger.warning(f"⚠️ Резервный механизм check_new_day_for_all_users будет проверять смену дня каждые 60 секунд")
-    
-    # 3) Служебные сообщения / чеклист — как у тебя уже есть
     # Добавляем сообщение с временем в список служебных
     user_state.service_message_ids.append(business_msg.message_id)
     
     # Отправляем подтверждение и сохраняем его ID
+    parsed = parse_time_string(text)
     confirm_msg = await context.bot.send_message(
         business_connection_id=user_state.business_connection_id,
         chat_id=chat_id,
@@ -467,11 +512,6 @@ async def handle_time_input(update: Update, context: ContextTypes.DEFAULT_TYPE, 
             mid,
         )
     user_state.service_message_ids.clear()
-    
-    # Сразу создаем чеклист
-    await create_checklist_for_user(context.bot, chat_id, user_state)
-    
-    # Обновляем состояние
     save_user_state(chat_id, user_state)
 
 
@@ -612,15 +652,15 @@ async def handle_all_updates(update: Update, context: ContextTypes.DEFAULT_TYPE)
                 logger.error(f"❌ Не удалось получить user_state для chat_id={chat_id}")
                 return
             
-            # Команда /force_close — принудительно закрыть текущий день
+            # Команды /force_close и /force_newday - обрабатываем вручную для business_message
+            # (CommandHandler не работает с business_message)
             text = (business_msg.text or "").strip()
             if text.startswith("/force_close"):
-                await handle_force_close(update, context, user_state)
+                await handle_force_close(update, context)
                 return
-
-            # Команда /force_newday — принудительно открыть новый день
+            
             if text.startswith("/force_newday"):
-                await handle_force_newday(update, context, user_state)
+                await handle_force_newday(update, context)
                 return
 
             # Команда /время (смена времени чек-листа) - проверяем ДО фильтра системных сообщений
@@ -652,12 +692,26 @@ async def handle_all_updates(update: Update, context: ContextTypes.DEFAULT_TYPE)
                 logger.info(f"🎵 Аудио/голосовое сообщение: audio={has_audio}, voice={has_voice}, text={has_text}, caption={has_caption}")
             
             # ЧЁТКИЙ ПОРЯДОК ПРОВЕРОК:
-            # 1) Ещё не просили время → интро + запрос
+            # 0) Проверяем и обновляем дату чеклиста, если она устарела
+            if user_state.checklist_message_id is not None:
+                current_user_date = get_user_local_date(user_state)
+                if user_state.date != current_user_date:
+                    logger.info(f"🔄 Дата устарела для chat_id={chat_id}: {user_state.date} → {current_user_date}, обновляю чеклист")
+                    user_state.date = current_user_date
+                    save_user_state(chat_id, user_state)
+                    await create_checklist_for_user(context.bot, chat_id, user_state)
+            
+            # 1) Ждём ввод времени (waiting_for_time) → обрабатываем как ввод времени
+            if user_state.waiting_for_time:
+                await handle_time_input(update, context, user_state)
+                return
+            
+            # 2) Ещё не просили время → интро + запрос
             if not user_state.asked_for_time:
                 await handle_first_message(update, context, user_state)
                 return
             
-            # 2) Уже просили время, но оно ещё НЕ установлено → парсим HH:MM
+            # 3) Уже просили время, но оно ещё НЕ установлено → парсим HH:MM (резервная проверка)
             if user_state.asked_for_time and user_state.time is None:
                 await handle_time_input(update, context, user_state)
                 return
@@ -678,18 +732,22 @@ async def handle_all_updates(update: Update, context: ContextTypes.DEFAULT_TYPE)
 # ===============================
 # Ежедневные задачи (закрытие дня и создание нового)
 # ===============================
-async def check_new_day_for_all_users(context: CallbackContext) -> None:
+async def check_day_rollover(context: CallbackContext) -> None:
     """
-    Проверяет смену дня для всех пользователей.
-    Вызывается каждые 60 секунд.
-    Загружает пользователей из базы данных, а не только из STATE (кэша).
+    Фоновая задача, которая проверяет всех пользователей и закрывает/открывает день
+    по их локальному времени.
     
-    ВАЖНО: Основной триггер смены дня теперь — handle_user_midnight (индивидуальные job'ы для каждого пользователя).
-    Эта функция служит как резервный механизм (страховка на случай рестарта бота или потерянных job'ов).
-    Она не навредит, максимум дважды подряд закроет/откроет тот же день, но логика по датам это отфильтрует.
+    Вызывается каждые 60 секунд через JobQueue.run_repeating().
+    
+    Логика для каждого пользователя:
+    - Вычисляет локальное время: now_local = utc_now + timedelta(minutes=utc_offset_minutes)
+    - Проверяет условия закрытия дня:
+      - utc_offset_minutes и day_end_time установлены
+      - local_date > last_closed_date ИЛИ (local_date == last_closed_date и local_time >= day_end_time)
+    - Если условия выполнены: закрывает день и создает новый
     """
     try:
-        logger.info(f"🔄 [check_new_day_for_all_users] Запуск проверки смены дня для всех пользователей")
+        logger.debug(f"🔄 [check_day_rollover] Запуск проверки смены дня для всех пользователей")
         
         # Получаем bot из context
         bot = getattr(context, 'bot', None)
@@ -697,29 +755,96 @@ async def check_new_day_for_all_users(context: CallbackContext) -> None:
             bot = getattr(context.application, 'bot', None)
         
         if not bot:
-            logger.error("❌ Не удалось получить bot из context в check_new_day_for_all_users")
+            logger.error("❌ Не удалось получить bot из context в check_day_rollover")
             return
         
         from db import get_all_chat_ids
+        from state import load_user_state, save_user_state
+        from helpers_daily import close_day_for_user, start_new_day_for_user
+        from datetime import datetime, timedelta, time
         
         # Загружаем всех пользователей из базы данных
         chat_ids = get_all_chat_ids()
-        logger.info(f"🔄 Проверка смены дня для всех пользователей. Найдено в БД: {len(chat_ids)}")
+        
+        utc_now = datetime.utcnow()
         
         for chat_id in chat_ids:
             try:
-                # Загружаем состояние из базы (если нет в кэше)
+                # Загружаем состояние из базы
                 user_state = load_user_state(chat_id)
-                if user_state:
-                    logger.debug(f"🔍 Проверка смены дня для chat_id={chat_id}, date={user_state.date}, time={user_state.time}, offset={getattr(user_state, 'timezone_offset_minutes', None)}")
-                    await check_and_handle_new_day(bot, chat_id, user_state)
+                if not user_state:
+                    continue
+                
+                # Проверяем, что utc_offset_minutes и day_end_time установлены
+                utc_offset_minutes = getattr(user_state, "timezone_offset_minutes", 0) or 0
+                if not user_state.day_end_time or utc_offset_minutes == 0 and user_state.day_end_time is None:
+                    continue
+                
+                # Вычисляем локальное время пользователя
+                now_local = utc_now + timedelta(minutes=utc_offset_minutes)
+                local_date = now_local.date().isoformat()
+                local_time = now_local.time()
+                
+                # Парсим day_end_time из "HH:MM"
+                try:
+                    h, m = map(int, user_state.day_end_time.split(":"))
+                    day_end_time_obj = time(h, m)
+                except Exception:
+                    logger.warning(f"⚠️ Неверный формат day_end_time для chat_id={chat_id}: {user_state.day_end_time}")
+                    continue
+                
+                # Проверяем условия для закрытия дня
+                should_close = False
+                
+                if user_state.last_closed_date:
+                    # Условие: local_date > last_closed_date ИЛИ (local_date == last_closed_date и local_time >= day_end_time)
+                    if local_date > user_state.last_closed_date:
+                        should_close = True
+                        logger.info(f"AUTO_DAY_CLOSE chat_id={chat_id} local_date={local_date} (дата сменилась: {user_state.last_closed_date} → {local_date})")
+                    elif local_date == user_state.last_closed_date and local_time >= day_end_time_obj:
+                        should_close = True
+                        logger.info(f"AUTO_DAY_CLOSE chat_id={chat_id} local_date={local_date} (время достигло day_end_time: {local_time} >= {day_end_time_obj})")
                 else:
-                    logger.debug(f"⏭️ Пропуск chat_id={chat_id}: user_state не найден")
+                    # last_closed_date не установлено - проверяем только время
+                    if local_time >= day_end_time_obj:
+                        should_close = True
+                        logger.info(f"AUTO_DAY_CLOSE chat_id={chat_id} local_date={local_date} (первое закрытие, время достигло day_end_time: {local_time} >= {day_end_time_obj})")
+                
+                if should_close:
+                    # ЗАЩИТА ОТ ДВОЙНОГО ЗАКРЫТИЯ: проверяем, не закрыли ли уже день
+                    # Если last_closed_date уже равен local_date, значит день уже закрыт
+                    if user_state.last_closed_date == local_date:
+                        logger.debug(f"⏭️ День уже закрыт для chat_id={chat_id}, last_closed_date={user_state.last_closed_date}, local_date={local_date}")
+                        continue
+                    
+                    # Закрываем день (сохраняет дату, которую закрываем, в last_closed_date)
+                    await close_day_for_user(bot, chat_id, user_state)
+                    
+                    # Перезагружаем состояние после закрытия
+                    user_state = load_user_state(chat_id)
+                    if not user_state:
+                        logger.error(f"❌ Не удалось загрузить user_state после close_day_for_user для chat_id={chat_id}")
+                        continue
+                    
+                    # Проверяем, что день действительно закрыт (защита от повторного закрытия)
+                    if user_state.last_closed_date == local_date:
+                        # Открываем новый день (обновляет user_state.date на новую дату)
+                        await start_new_day_for_user(bot, chat_id, user_state)
+                        
+                        # Перезагружаем состояние после открытия нового дня
+                        user_state = load_user_state(chat_id)
+                        if user_state:
+                            logger.info(f"AUTO_NEW_DAY chat_id={chat_id} local_date={user_state.date}")
+                        else:
+                            logger.error(f"❌ Не удалось загрузить user_state после start_new_day_for_user для chat_id={chat_id}")
+                    else:
+                        logger.warning(f"⚠️ День не был закрыт для chat_id={chat_id}, last_closed_date={user_state.last_closed_date}, ожидалось={local_date}")
+                    
             except Exception as e:
-                logger.error(f"❌ Ошибка при проверке смены дня для chat_id={chat_id}: {e}", exc_info=True)
+                logger.error(f"ERROR_DAY_ROLLOVER chat_id={chat_id} error={e}", exc_info=True)
                 # Продолжаем обработку остальных пользователей
     except Exception as e:
-        logger.error(f"❌ Критическая ошибка при проверке смены дня: {e}", exc_info=True)
+        logger.error(f"❌ Критическая ошибка в check_day_rollover: {e}", exc_info=True)
 
 
 async def error_handler(update: object, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -828,6 +953,8 @@ def main():
     # Добавление обработчиков
     print("DEBUG: Добавление обработчиков...")
     app.add_handler(CommandHandler("start", cmd_start))
+    app.add_handler(CommandHandler("force_close", handle_force_close))
+    app.add_handler(CommandHandler("force_newday", handle_force_newday))
     app.add_handler(CallbackQueryHandler(handle_callback_query))
     # Обработчик всех обновлений (должен быть последним, чтобы не перехватывать команды)
     app.add_handler(TypeHandler(Update, handle_all_updates), group=-1)
@@ -854,11 +981,11 @@ def main():
                 
                 # 1. Настраиваем резервный механизм проверки смены дня
                 job_queue.run_repeating(
-                    callback=check_new_day_for_all_users,
+                    callback=check_day_rollover,
                     interval=60,
-                    first=10,
+                    first=60,
                 )
-                logger.info("✅ Настроена периодическая проверка смены дня (post_init): каждые 60 секунд")
+                logger.info("✅ Настроена периодическая проверка конца дня (post_init): каждые 60 секунд")
                 
                 # 2. Восстанавливаем индивидуальные midnight job'ы для всех существующих пользователей
                 try:
@@ -915,11 +1042,11 @@ def main():
                 
                 # 1. Настраиваем резервный механизм проверки смены дня
                 job_queue.run_repeating(
-                    callback=check_new_day_for_all_users,
+                    callback=check_day_rollover,
                     interval=60,
-                    first=10,
+                    first=60,
                 )
-                logger.info("✅ Настроена периодическая проверка смены дня (после первого обновления): каждые 60 секунд")
+                logger.info("✅ Настроена периодическая проверка конца дня (после первого обновления): каждые 60 секунд")
                 
                 # 2. Восстанавливаем индивидуальные midnight job'ы для всех существующих пользователей
                 try:

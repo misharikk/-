@@ -8,10 +8,13 @@
 """
 
 import json
+import logging
 import sqlite3
 from dataclasses import dataclass, field
 from typing import Optional, Dict, List
 from db import get_connection
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass
@@ -35,15 +38,16 @@ class UserState:
     business_connection_id: str
     asked_for_time: bool = False   # показывали интро и просили время?
     waiting_for_time: bool = False # ждём ввод времени HH:MM
-    time: Optional[str] = None     # строка "HH:MM"
-    timezone_offset_minutes: int = 0  # смещение часового пояса в минутах относительно UTC (пока не используется, по умолчанию 0)
+    time: Optional[str] = None     # строка "HH:MM" (для обратной совместимости)
+    day_end_time: Optional[str] = None  # строка "HH:MM" - время окончания дня (ежедневный конец дня)
+    timezone_offset_minutes: int = 0  # смещение часового пояса в минутах относительно UTC
     
     # Поля для чеклиста:
     checklist_message_id: Optional[int] = None   # message_id созданного чеклиста
     date: Optional[str] = None                   # дата чеклиста, можно хранить "YYYY-MM-DD"
     tasks: List[TaskItem] = field(default_factory=list)  # список задач
     last_closed_date: Optional[str] = None       # дата последнего закрытия дня (защита от двойного закрытия)
-    last_opened_date: Optional[str] = None       # дата последнего открытия дня (защита от двойного открытия)
+    last_opened_date: Optional[str] = None       # дата последнего открытия дня (защита от двойного закрытия)
     
     # Служебные сообщения для удаления
     service_message_ids: List[int] = field(default_factory=list)
@@ -84,10 +88,11 @@ def load_user_state(chat_id: int) -> Optional[UserState]:
         cursor.execute("""
             SELECT 
                 business_connection_id, asked_for_time, waiting_for_time, time,
+                timezone_offset_minutes,
                 checklist_message_id, date, tasks, service_message_ids,
                 pending_task_text, pending_task_message_id, pending_service_message_ids,
                 awaiting_tag, tags_history, tags_page_index, pending_confirm_job_id,
-                tag_checklists, last_closed_date, last_opened_date, next_rollover_job_name
+                tag_checklists, last_closed_date, last_opened_date, next_rollover_job_name, day_end_time
             FROM user_state
             WHERE chat_id = ?
         """, (chat_id,))
@@ -112,80 +117,116 @@ def load_user_state(chat_id: int) -> Optional[UserState]:
     if row is None:
         return None
     
-    # Парсим данные из БД
-    business_connection_id = row[0]
-    asked_for_time = bool(row[1]) if row[1] is not None else False
-    waiting_for_time = bool(row[2]) if row[2] is not None else False
-    time = row[3]
-    checklist_message_id = row[4]
-    date = row[5]
-    # Десериализуем tasks из JSON в список TaskItem
-    tasks_data = json.loads(row[6]) if row[6] else []
-    tasks = []
-    for item in tasks_data:
-        if isinstance(item, dict):
-            # Новый формат: TaskItem
-            tasks.append(TaskItem(**item))
-        elif isinstance(item, str):
-            # Старый формат: просто строка (для миграции)
-            # Присваиваем item_id на основе индекса + 1
-            tasks.append(TaskItem(item_id=len(tasks) + 1, text=item, done=False))
-        else:
-            # На всякий случай
-            tasks.append(TaskItem(item_id=len(tasks) + 1, text=str(item), done=False))
-    service_message_ids = json.loads(row[7]) if row[7] else []
-    pending_task_text = row[8]
-    pending_task_message_id = row[9]
-    pending_service_message_ids = json.loads(row[10]) if row[10] else []
-    awaiting_tag = bool(row[11]) if row[11] is not None else False
-    tags_history = json.loads(row[12]) if row[12] else []
-    tags_page_index = row[13] if row[13] is not None else 0
-    pending_confirm_job_id = row[14]
-    # Новые поля (могут отсутствовать в старых БД)
-    if has_new_fields and len(row) > 16:
-        last_closed_date = row[16] if len(row) > 16 else None
-        last_opened_date = row[17] if len(row) > 17 else None
-        timezone_offset_minutes = row[18] if len(row) > 18 else 0
-        next_rollover_job_name = row[19] if len(row) > 19 else None
+    # Распаковываем данные из БД через кортеж (избегаем проблем с индексами)
+    if has_new_fields:
+        (
+            business_connection_id,
+            asked_for_time_raw,
+            waiting_for_time_raw,
+            time,
+            timezone_offset_minutes,
+            checklist_message_id,
+            date,
+            tasks_json,
+            service_message_ids_json,
+            pending_task_text,
+            pending_task_message_id,
+            pending_service_message_ids_json,
+            awaiting_tag_raw,
+            tags_history_json,
+            tags_page_index_raw,
+            pending_confirm_job_id,
+            tag_checklists_json,
+            last_closed_date,
+            last_opened_date,
+            next_rollover_job_name,
+            day_end_time,
+        ) = row
     else:
+        (
+            business_connection_id,
+            asked_for_time_raw,
+            waiting_for_time_raw,
+            time,
+            checklist_message_id,
+            date,
+            tasks_json,
+            service_message_ids_json,
+            pending_task_text,
+            pending_task_message_id,
+            pending_service_message_ids_json,
+            awaiting_tag_raw,
+            tags_history_json,
+            tags_page_index_raw,
+            pending_confirm_job_id,
+            tag_checklists_json,
+        ) = row
+        # Для старой схемы поля отсутствуют — выставляем дефолты
+        timezone_offset_minutes = 0
         last_closed_date = None
         last_opened_date = None
-        timezone_offset_minutes = 0
         next_rollover_job_name = None
+        day_end_time = None
+    
+    # Нормализуем типы
+    asked_for_time = bool(asked_for_time_raw) if asked_for_time_raw is not None else False
+    waiting_for_time = bool(waiting_for_time_raw) if waiting_for_time_raw is not None else False
+    tags_page_index = tags_page_index_raw if tags_page_index_raw is not None else 0
+    awaiting_tag = bool(awaiting_tag_raw) if awaiting_tag_raw is not None else False
+    
+    # Десериализуем tasks из JSON в список TaskItem
+    tasks_data = json.loads(tasks_json) if tasks_json else []
+    tasks: List[TaskItem] = []
+    for item in tasks_data:
+        if isinstance(item, dict):
+            tasks.append(TaskItem(**item))
+        elif isinstance(item, str):
+            tasks.append(TaskItem(item_id=len(tasks) + 1, text=item, done=False))
+        else:
+            tasks.append(TaskItem(item_id=len(tasks) + 1, text=str(item), done=False))
+    
+    # Десериализуем service_message_ids
+    service_message_ids = json.loads(service_message_ids_json) if service_message_ids_json else []
+    
+    # Десериализуем pending_service_message_ids
+    pending_service_message_ids = json.loads(pending_service_message_ids_json) if pending_service_message_ids_json else []
+    
+    # Десериализуем tags_history
+    tags_history = json.loads(tags_history_json) if tags_history_json else []
     
     # Десериализуем tag_checklists из JSON
-    tag_checklists = {}
-    if row[15]:  # tag_checklists
-        tag_checklists_json = json.loads(row[15])
-        for tag, tag_data in tag_checklists_json.items():
-            # Десериализуем tasks для каждого тега
+    tag_checklists: Dict[str, TagChecklistState] = {}
+    if tag_checklists_json:
+        tag_checklists_raw = json.loads(tag_checklists_json)
+        for tag, tag_data in tag_checklists_raw.items():
             tag_tasks_data = tag_data.get("tasks", [])
-            tag_tasks = []
+            tag_tasks: List[TaskItem] = []
             for item in tag_tasks_data:
                 if isinstance(item, dict):
-                    # Новый формат: TaskItem
                     tag_tasks.append(TaskItem(**item))
                 elif isinstance(item, str):
-                    # Старый формат: просто строка (для миграции)
                     tag_tasks.append(TaskItem(item_id=len(tag_tasks) + 1, text=item, done=False))
                 else:
                     tag_tasks.append(TaskItem(item_id=len(tag_tasks) + 1, text=str(item), done=False))
             tag_checklists[tag] = TagChecklistState(
                 title=tag_data["title"],
                 checklist_message_id=tag_data["checklist_message_id"],
-                tasks=tag_tasks
+                tasks=tag_tasks,
             )
     
-    # Создаем объект UserState
+    # Создаем объект UserState с явным указанием всех полей
     user_state = UserState(
         business_connection_id=business_connection_id,
         asked_for_time=asked_for_time,
         waiting_for_time=waiting_for_time,
         time=time,
-        timezone_offset_minutes=timezone_offset_minutes,
+        day_end_time=day_end_time,
+        timezone_offset_minutes=timezone_offset_minutes or 0,
         checklist_message_id=checklist_message_id,
         date=date,
         tasks=tasks,
+        last_closed_date=last_closed_date,
+        last_opened_date=last_opened_date,
         service_message_ids=service_message_ids,
         pending_task_text=pending_task_text,
         pending_task_message_id=pending_task_message_id,
@@ -194,10 +235,8 @@ def load_user_state(chat_id: int) -> Optional[UserState]:
         tags_history=tags_history,
         tags_page_index=tags_page_index,
         pending_confirm_job_id=pending_confirm_job_id,
-        tag_checklists=tag_checklists,
-        last_closed_date=last_closed_date,
-        last_opened_date=last_opened_date,
         next_rollover_job_name=next_rollover_job_name,
+        tag_checklists=tag_checklists,
     )
     
     # Сохраняем в кэш
@@ -206,10 +245,66 @@ def load_user_state(chat_id: int) -> Optional[UserState]:
     return user_state
 
 
+def clean_tasks_list(tasks: List[TaskItem]) -> List[TaskItem]:
+    """
+    Очищает список задач от дубликатов:
+    - Удаляет дубликаты по item_id (оставляет первую задачу с таким item_id)
+    - Удаляет дубликаты по тексту (оставляет первую задачу с таким текстом)
+    
+    Возвращает очищенный список задач.
+    """
+    if not tasks:
+        return tasks
+    
+    # Шаг 1: Удаляем дубликаты по item_id (оставляем первую задачу с таким item_id)
+    seen_item_ids = set()
+    clean_by_id = []
+    for task in tasks:
+        if task.item_id not in seen_item_ids:
+            clean_by_id.append(task)
+            seen_item_ids.add(task.item_id)
+    
+    # Шаг 2: Удаляем дубликаты по тексту (оставляем первую задачу с таким текстом)
+    seen_texts = set()
+    clean = []
+    for task in clean_by_id:
+        # Нормализуем текст для сравнения (убираем пробелы по краям, приводим к нижнему регистру)
+        normalized_text = task.text.strip().lower()
+        if normalized_text not in seen_texts:
+            clean.append(task)
+            seen_texts.add(normalized_text)
+    
+    return clean
+
+
+def validate_and_clean_user_state(user_state: UserState) -> None:
+    """
+    Валидирует и очищает состояние пользователя перед сохранением:
+    - Удаляет дубликаты задач по item_id и тексту
+    - Применяется к user_state.tasks и user_state.tag_checklists[tag].tasks
+    """
+    # Очищаем дневные задачи
+    original_count = len(user_state.tasks)
+    user_state.tasks = clean_tasks_list(user_state.tasks)
+    if len(user_state.tasks) != original_count:
+        logger.warning(f"🧹 Очищены дневные задачи: было {original_count}, стало {len(user_state.tasks)}")
+    
+    # Очищаем задачи в теговых чеклистах
+    for tag, tag_state in user_state.tag_checklists.items():
+        original_count = len(tag_state.tasks)
+        tag_state.tasks = clean_tasks_list(tag_state.tasks)
+        if len(tag_state.tasks) != original_count:
+            logger.warning(f"🧹 Очищены задачи в теговом чеклисте '{tag}': было {original_count}, стало {len(tag_state.tasks)}")
+
+
 def save_user_state(chat_id: int, user_state: UserState) -> None:
     """
     Сохраняет состояние пользователя в SQLite и обновляет кэш.
+    Перед сохранением валидирует и очищает данные (удаляет дубликаты по item_id и тексту).
     """
+    # Валидируем и очищаем данные перед сохранением
+    validate_and_clean_user_state(user_state)
+    
     # Сохраняем в кэш
     STATE[chat_id] = user_state
     
@@ -238,8 +333,8 @@ def save_user_state(chat_id: int, user_state: UserState) -> None:
                 timezone_offset_minutes, checklist_message_id, date, tasks, service_message_ids,
                 pending_task_text, pending_task_message_id, pending_service_message_ids,
                 awaiting_tag, tags_history, tags_page_index, pending_confirm_job_id,
-                tag_checklists, last_closed_date, last_opened_date, next_rollover_job_name
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                tag_checklists, last_closed_date, last_opened_date, next_rollover_job_name, day_end_time
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """, (
             chat_id,
             user_state.business_connection_id,
@@ -262,6 +357,7 @@ def save_user_state(chat_id: int, user_state: UserState) -> None:
             user_state.last_closed_date,
             user_state.last_opened_date,
             user_state.next_rollover_job_name,
+            user_state.day_end_time,
         ))
     except sqlite3.OperationalError:
         # Если колонок нет - сохраняем без них (миграция добавит их при следующем запуске)
@@ -295,6 +391,63 @@ def save_user_state(chat_id: int, user_state: UserState) -> None:
     
     conn.commit()
     conn.close()
+
+
+def set_user_time_info(chat_id: int, local_time_str: str) -> bool:
+    """
+    Вычисляет и сохраняет информацию о времени пользователя:
+    - timezone_offset_minutes (UTC-смещение)
+    - day_end_time (время окончания дня)
+    - date (локальная дата пользователя)
+    - last_closed_date = date (сбрасывает на текущую дату, если не установлено)
+    
+    Возвращает True если время успешно установлено, False если ошибка парсинга.
+    """
+    import logging
+    from helpers_text import parse_time_string
+    from helpers_daily import compute_local_datetime_and_offset
+    from datetime import datetime
+    
+    logger = logging.getLogger(__name__)
+    
+    # Парсим время
+    parsed = parse_time_string(local_time_str)
+    if not parsed:
+        return False
+    
+    # Загружаем состояние
+    user_state = load_user_state(chat_id)
+    if not user_state:
+        return False
+    
+    # Вычисляем локальное время и смещение
+    now_utc = datetime.utcnow()
+    try:
+        local_dt, utc_offset_minutes = compute_local_datetime_and_offset(now_utc, parsed)
+    except Exception as e:
+        logger.error(f"❌ Ошибка при вычислении локального времени для chat_id={chat_id}: {e}", exc_info=True)
+        return False
+    
+    # Сохраняем время
+    user_state.time = parsed  # для обратной совместимости
+    user_state.day_end_time = parsed  # время окончания дня (локальное время пользователя)
+    user_state.timezone_offset_minutes = utc_offset_minutes
+    
+    # Фиксируем дату на основе локального времени пользователя
+    local_date = local_dt.date().isoformat()
+    user_state.date = local_date
+    
+    # Если last_closed_date не установлено, выставляем текущую локальную дату
+    if user_state.last_closed_date is None:
+        user_state.last_closed_date = local_date
+    
+    # Сохраняем состояние
+    save_user_state(chat_id, user_state)
+    
+    # Логируем установку времени
+    logger.info(f"SET_TIME chat_id={chat_id} user_time={parsed} utc_offset={utc_offset_minutes} local_date={local_date} utc_now={now_utc.strftime('%Y-%m-%d %H:%M:%S')}")
+    
+    return True
 
 
 def delete_user_state(chat_id: int) -> bool:

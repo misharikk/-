@@ -4,6 +4,7 @@
 
 import logging
 from datetime import datetime
+from typing import Optional, Tuple
 from telegram import InputChecklist, InputChecklistTask
 
 # Импорты из других модулей (будут добавлены после создания)
@@ -11,6 +12,12 @@ from state import UserState, TagChecklistState, TaskItem, save_user_state
 from helpers_text import get_user_local_date
 
 logger = logging.getLogger(__name__)
+
+# Глобальный set для отслеживания обработанных событий чеклиста (защита от дубликатов)
+# Ключ: (target_checklist_type, tuple(marked_as_done_ids), tuple(marked_as_undone_ids))
+# Ограничиваем размер до 1000 элементов для предотвращения утечки памяти
+processed_event_ids: set = set()
+MAX_PROCESSED_EVENTS = 1000
 
 
 def get_today_human_date() -> str:
@@ -49,6 +56,35 @@ def get_human_date_from_iso(date_iso: str) -> str:
         return date_iso
 
 
+def get_checklist_title_from_date(date_iso: str) -> str:
+    """
+    Преобразует дату из формата YYYY-MM-DD в формат для title чеклиста: #4дек_чт
+    """
+    if not date_iso:
+        return "#дата"
+    
+    try:
+        date_obj = datetime.strptime(date_iso, "%Y-%m-%d")
+        
+        # Сокращенные названия месяцев
+        MONTH_SHORT = [
+            "", "янв", "фев", "мар", "апр", "мая", "июн",
+            "июл", "авг", "сен", "окт", "ноя", "дек"
+        ]
+        
+        # Сокращенные названия дней недели
+        WEEKDAY_SHORT = ["пн", "вт", "ср", "чт", "пт", "сб", "вс"]
+        
+        day = date_obj.day
+        month_short = MONTH_SHORT[date_obj.month]
+        weekday_short = WEEKDAY_SHORT[date_obj.weekday()]
+        
+        return f"#{day}{month_short}_{weekday_short}"
+    except Exception as e:
+        logger.error(f"❌ Ошибка при преобразовании даты '{date_iso}' для title: {e}")
+        return "#дата"
+
+
 async def create_checklist_for_user(
     bot,
     chat_id: int,
@@ -63,18 +99,58 @@ async def create_checklist_for_user(
     - сохраняет checklist_message_id, дату и список tasks в user_state
     """
     try:
+        # 1. Сохраняем старую дату ДО пересчёта
+        old_date = user_state.date
+        
+        # 2. Определяем дату для чеклиста
+        # ПРАВИЛО:
+        # - Если чеклиста нет (checklist_message_id is None) и дата уже установлена - используем её
+        #   (например, при создании нового дня в start_new_day_for_user)
+        # - Если чеклиста нет и дата отсутствует - вычисляем через get_user_local_date
+        # - Если чеклист существует - проверяем, не изменилась ли дата через get_user_local_date
+        if user_state.checklist_message_id is None:
+            # Создаём новый чеклист
+            if user_state.date:
+                # Дата уже установлена (например, из start_new_day_for_user) - используем её
+                current_user_date = user_state.date
+                logger.debug(f"📅 Используем установленную дату для нового чеклиста: {current_user_date}")
+            else:
+                # Дата не установлена - вычисляем актуальную локальную дату пользователя
+                current_user_date = get_user_local_date(user_state)
+                logger.debug(f"📅 Вычислена дата для нового чеклиста: {current_user_date}")
+        else:
+            # Обновляем существующий чеклист - проверяем, не изменилась ли дата
+            current_user_date = get_user_local_date(user_state)
+        
+        # 3. Формируем title в формате #4дек_чт
+        checklist_title = get_checklist_title_from_date(current_user_date)
+        
+        # 4. Если чеклист уже существует — проверяем, не изменилась ли дата
         if user_state.checklist_message_id is not None:
-            # уже есть чеклист — ничего не делаем
-            logger.info(f"⏭️ Чеклист уже существует для chat_id={chat_id}, message_id={user_state.checklist_message_id}")
+            if old_date and old_date != current_user_date:
+                logger.info(
+                    f"🔄 Дата изменилась для chat_id={chat_id}: "
+                    f"{old_date} → {current_user_date}, обновляю чеклист"
+                )
+                user_state.date = current_user_date
+                save_user_state(chat_id, user_state)
+                await update_checklist_for_user(bot, chat_id, user_state)
+                return
+            else:
+                logger.info(
+                    f"⏭️ Чеклист уже существует для chat_id={chat_id}, "
+                    f"message_id={user_state.checklist_message_id}, "
+                    f"дата актуальна ({current_user_date})"
+                )
             return
+        
+        # 5. Если чеклиста ещё нет — создаём новый
+        # Обновляем дату только если она изменилась или не была установлена
+        if user_state.date != current_user_date:
+            user_state.date = current_user_date
+            save_user_state(chat_id, user_state)
 
         logger.info(f"🔨 Начинаю создание чеклиста для chat_id={chat_id}")
-        
-        # Определяем дату чеклиста: если её ещё нет, вычисляем по "локальному" дню пользователя
-        if not user_state.date:
-            user_state.date = get_user_local_date(user_state)
-        
-        human_date = get_human_date_from_iso(user_state.date)
         
         # Если задач нет, создаем автоматическую задачу
         if not user_state.tasks:
@@ -101,10 +177,10 @@ async def create_checklist_for_user(
             if len(task_text) > 100:
                 task_text = task_text[:97].rstrip() + "…"
             
-            # ВАЖНО: id в чеклисте должен быть позицией (1-based), а не item_id из состояния
-            # Это нужно для правильной синхронизации событий
+            # ВАЖНО: id в чеклисте должен быть item_id из состояния, а не позицией
+            # Это нужно для правильной синхронизации событий - marked_as_done_task_ids содержат item_id
             tasks.append(InputChecklistTask(
-                id=task_position,  # Используем позицию, а не task_item.item_id
+                id=task_item.item_id,  # Используем item_id из состояния для синхронизации
                 text=task_text,
             ))
 
@@ -114,13 +190,13 @@ async def create_checklist_for_user(
             return
 
         checklist = InputChecklist(
-            title=human_date,
+            title=checklist_title,
             tasks=tasks,
             others_can_add_tasks=False,
             others_can_mark_tasks_as_done=True,
         )
 
-        logger.info(f"📤 Отправляю чеклист для chat_id={chat_id}, title='{human_date}', задач={len(tasks)}")
+        logger.info(f"📤 Отправляю чеклист для chat_id={chat_id}, title='{checklist_title}', задач={len(tasks)}")
         msg = await bot.send_checklist(
             business_connection_id=user_state.business_connection_id,
             chat_id=chat_id,
@@ -142,6 +218,7 @@ async def update_checklist_for_user(
 ) -> None:
     """
     Обновляет существующий чеклист на основе user_state.tasks.
+    ВАЖНО: пропускает выполненные задачи и использует позицию (1-based) для синхронизации с событиями.
     """
     try:
         if user_state.checklist_message_id is None:
@@ -150,22 +227,33 @@ async def update_checklist_for_user(
             return
 
         tasks = []
+        task_position = 0  # Позиция в чеклисте (1-based)
         for task_item in user_state.tasks:
+            # Пропускаем выполненные задачи при обновлении чеклиста
+            if task_item.done:
+                logger.debug(f"⏭️ ПРОПУСКАЕМ выполненную задачу при обновлении чеклиста: '{task_item.text[:50]}' (item_id={task_item.item_id}, done={task_item.done})")
+                continue
+            
+            task_position += 1  # Увеличиваем позицию только для невыполненных задач
             # Формируем текст без номера
             task_text = task_item.text
             # Обрезаем до 100 символов (лимит Telegram API для чеклистов)
             if len(task_text) > 100:
                 task_text = task_text[:97].rstrip() + "…"
+            
+            # ВАЖНО: id в чеклисте должен быть item_id из состояния, а не позицией
+            # Это нужно для правильной синхронизации событий - marked_as_done_task_ids содержат item_id
             tasks.append(InputChecklistTask(
-                id=task_item.item_id,
+                id=task_item.item_id,  # Используем item_id из состояния для синхронизации
                 text=task_text,
             ))
 
-        # Используем дату из user_state для title чеклиста
-        human_date = get_human_date_from_iso(user_state.date) if user_state.date else get_today_human_date()
+        # ВСЕГДА вычисляем актуальную дату для title чеклиста (формат: #4дек_чт)
+        current_user_date = get_user_local_date(user_state)
+        checklist_title = get_checklist_title_from_date(current_user_date)
         
         checklist = InputChecklist(
-            title=human_date,
+            title=checklist_title,
             tasks=tasks,
             others_can_add_tasks=False,
             others_can_mark_tasks_as_done=True,
@@ -216,14 +304,24 @@ async def add_task_to_tag_checklist(
             save_user_state(chat_id, user_state)
             
             # Формируем список задач без нумерации
+            # ВАЖНО: пропускаем выполненные задачи и используем позицию (1-based) для синхронизации
             tasks = []
+            task_position = 0  # Позиция в чеклисте (1-based)
             for task_item in tag_state.tasks:
+                # Пропускаем выполненные задачи
+                if task_item.done:
+                    logger.debug(f"⏭️ ПРОПУСКАЕМ выполненную задачу в теговом чеклисте '{tag}': '{task_item.text[:50]}' (item_id={task_item.item_id}, done={task_item.done})")
+                    continue
+                
+                task_position += 1  # Увеличиваем позицию только для невыполненных задач
                 task_text = task_item.text
                 # Обрезаем до 100 символов (лимит Telegram API для чеклистов)
                 if len(task_text) > 100:
                     task_text = task_text[:97].rstrip() + "…"
+                # ВАЖНО: id в чеклисте должен быть item_id из состояния, а не позицией
+                # Это нужно для правильной синхронизации событий - marked_as_done_task_ids содержат item_id
                 tasks.append(InputChecklistTask(
-                    id=task_item.item_id,
+                    id=task_item.item_id,  # Используем item_id из состояния для синхронизации
                     text=task_text,
                 ))
             
@@ -255,13 +353,30 @@ async def add_task_to_tag_checklist(
         
         # Если чеклиста нет или он был удален - создаём новый
         if tag not in user_state.tag_checklists:
-            # Формируем первую задачу без нумерации
+            # Вычисляем next_id для новой задачи
+            # Используем максимальный item_id из существующих задач для этого тега
+            # Если задач нет (первый чеклист для тега), item_id будет 1
+            # ВАЖНО: даже если tag_state был удалён из tag_checklists, 
+            # нужно проверить, есть ли задачи для этого тега в состоянии
+            # Но так как tag not in user_state.tag_checklists, значит задач нет
+            # Однако для корректной нумерации при последующих созданиях чеклиста
+            # используем максимальный item_id из всех задач всех теговых чеклистов
+            # чтобы избежать конфликтов item_id между разными тегами
+            all_tag_task_ids = []
+            for existing_tag, existing_tag_state in user_state.tag_checklists.items():
+                all_tag_task_ids.extend([t.item_id for t in existing_tag_state.tasks])
+            
+            # Вычисляем next_id как максимальный + 1, или 1 если задач нет
+            next_id = max(all_tag_task_ids, default=0) + 1
+            logger.debug(f"🔢 Вычислен next_id={next_id} для нового тегового чеклиста '{tag}' (максимальный item_id в существующих теговых чеклистах: {max(all_tag_task_ids, default=0)})")
+            
+            # Формируем первую задачу
             first_task_text = task_text
             if len(first_task_text) > 100:
                 first_task_text = first_task_text[:97].rstrip() + "…"
             
             tasks = [InputChecklistTask(
-                id=1,
+                id=next_id,
                 text=first_task_text,
             )]
             
@@ -283,12 +398,12 @@ async def add_task_to_tag_checklist(
             tag_state = TagChecklistState(
                 title=tag,
                 checklist_message_id=msg.message_id,
-                tasks=[TaskItem(item_id=1, text=task_text, done=False)],
+                tasks=[TaskItem(item_id=next_id, text=task_text, done=False)],
             )
             user_state.tag_checklists[tag] = tag_state
             save_user_state(chat_id, user_state)
             
-            logger.info(f"✅ Чеклист по тегу '{tag}' создан для chat_id={chat_id}, message_id={msg.message_id}")
+            logger.info(f"✅ Чеклист по тегу '{tag}' создан для chat_id={chat_id}, message_id={msg.message_id}, item_id={next_id}")
     except Exception as e:
         logger.error(f"❌ Ошибка при добавлении задачи в чеклист по тегу '{tag}' для chat_id={chat_id}: {e}", exc_info=True)
         # Ничего не пробрасываем — просто логируем
@@ -325,10 +440,10 @@ async def rebuild_tag_checklist_for_user(
             if len(text) > 100:
                 text = text[:97].rstrip() + "…"
 
-            # ВАЖНО: id в чеклисте должен быть позицией (1-based), а не item_id из состояния
-            # Это нужно для правильной синхронизации событий
+            # ВАЖНО: id в чеклисте должен быть item_id из состояния, а не позицией
+            # Это нужно для правильной синхронизации событий - marked_as_done_task_ids содержат item_id
             tasks.append(InputChecklistTask(
-                id=task_position,  # Используем позицию, а не task_item.item_id
+                id=task_item.item_id,  # Используем item_id из состояния для синхронизации
                 text=text,
             ))
 
@@ -357,335 +472,477 @@ async def rebuild_tag_checklist_for_user(
         # Ничего не пробрасываем — просто логируем
 
 
+def resolve_checklist_type(user_state: UserState, checklist_message_id: int, checklist_title: str) -> Tuple[Optional[str], Optional[str]]:
+    """
+    Определяет тип чеклиста по message_id и заголовку.
+    
+    Возвращает:
+    - ('daily', None) для дневного чеклиста
+    - ('tag', tag_name) для тегового чеклиста
+    - (None, None) если чеклист не найден
+    """
+    # Проверяем дневной чеклист
+    if user_state.checklist_message_id == checklist_message_id:
+        return ('daily', None)
+    
+    # Проверяем по заголовку дневного чеклиста
+    if user_state.date:
+        expected_daily_title = get_checklist_title_from_date(user_state.date)
+        if checklist_title == expected_daily_title:
+            return ('daily', None)
+    
+    # Проверяем теговые чеклисты
+    for tag, tag_state in user_state.tag_checklists.items():
+        if tag_state.checklist_message_id == checklist_message_id:
+            return ('tag', tag)
+        
+        # Проверяем по заголовку (начинается с # и равен tag_state.title)
+        if checklist_title.startswith('#') and checklist_title == tag_state.title:
+            return ('tag', tag)
+    
+    return (None, None)
+
+
+def normalize(text: str) -> str:
+    """
+    Нормализует текст для сравнения:
+    - Приводит к нижнему регистру (case-insensitive)
+    - Убирает пробелы по краям (trim)
+    - Убирает двойные пробелы (через split/join)
+    
+    Примеры:
+    - "  Суп  " → "суп"
+    - "Суп  с  хлебом" → "суп с хлебом"
+    - "СУП" → "суп"
+    """
+    return " ".join(text.lower().strip().split())
+
+
+def sync_task_status_by_text(user_state: UserState, task_text: str, new_done_status: bool) -> bool:
+    """
+    Синхронизирует статус выполнения задачи по тексту во всех чеклистах.
+    
+    Ищет задачи с таким же текстом (после нормализации) в:
+    - user_state.tasks (дневной чеклист)
+    - user_state.tag_checklists[tag].tasks (все теговые чеклисты)
+    
+    Устанавливает им тот же статус done, что и у исходной задачи.
+    
+    ВАЖНО: использует строгую нормализацию текста (case-insensitive, без двойных пробелов).
+    
+    Возвращает True, если были найдены и обновлены задачи.
+    """
+    task_text_normalized = normalize(task_text)
+    if not task_text_normalized:
+        return False
+    
+    updated = False
+    
+    # Синхронизируем в дневном чеклисте
+    for task in user_state.tasks:
+        if normalize(task.text) == task_text_normalized:
+            if task.done != new_done_status:
+                task.done = new_done_status
+                updated = True
+                logger.debug(f"🔄 Синхронизирован статус дневной задачи: text='{task.text[:30]}' (нормализовано: '{task_text_normalized[:30]}'), done={new_done_status}")
+    
+    # Синхронизируем во всех теговых чеклистах
+    for tag, tag_state in user_state.tag_checklists.items():
+        for task in tag_state.tasks:
+            if normalize(task.text) == task_text_normalized:
+                if task.done != new_done_status:
+                    task.done = new_done_status
+                    updated = True
+                    logger.debug(f"🔄 Синхронизирован статус теговой задачи '{tag}': text='{task.text[:30]}' (нормализовано: '{task_text_normalized[:30]}'), done={new_done_status}")
+    
+    if updated:
+        logger.info(f"✅ Синхронизирован статус задачи по тексту: text='{task_text[:50]}' (нормализовано: '{task_text_normalized[:50]}'), done={new_done_status}")
+    
+    return updated
+
+
 async def handle_checklist_state_update(business_msg, user_state: UserState, chat_id: int) -> None:
     """
-    Обрабатывает изменение состояния пункта чеклиста (галочка/снятие).
-    Определяет, какой чеклист изменился (дневной или теговый),
-    какой item_id, новое состояние done (True/False),
-    и обновляет user_state.tasks или user_state.tag_checklists[*].tasks.
+    Обрабатывает изменение состояния пунктов чек-листа.
+    Использует checklist_message_id и item_id из событий checklist_tasks_done / checklist_tasks_added.
+    Обновляет флаг done в user_state.tasks (дневной чеклист) или в user_state.tag_checklists[*].tasks (теговые чеклисты).
+    Никаких эвристик по позициям не используется.
+    
+    ВАЖНО: сначала используем checklist_tasks_done.checklist_message.message_id,
+    затем — reply_to_message, затем fallback на message_id сервисного сообщения.
     """
     try:
-        # Определяем message_id чеклиста (самого сообщения с чеклистом)
-        # Когда пользователь отмечает пункт, Telegram может отправлять событие как reply к сообщению с чеклистом
-        checklist_message_id = None
-        reply_to = getattr(business_msg, "reply_to_message", None)
-        if reply_to:
-            checklist_message_id = reply_to.message_id
-            logger.info(f"🔍 Событие чеклиста через reply_to_message: checklist_message_id={checklist_message_id}")
-        else:
-            checklist_message_id = business_msg.message_id
-            logger.info(f"🔍 Событие чеклиста напрямую: checklist_message_id={checklist_message_id}")
-        
-        # Пробуем найти информацию об изменении в различных полях
-        changed_item_id = None
-        is_done = None
-        
-        # Проверяем различные возможные поля для событий чеклиста
-        # Сначала пробуем через to_dict() для полного просмотра структуры
-        msg_dict = business_msg.to_dict()
-        
-        # Логируем структуру для отладки
-        checklist_keys = [k for k in msg_dict.keys() if 'checklist' in k.lower() or 'item' in k.lower()]
-        logger.info(f"🔍 Обработка события чеклиста для chat_id={chat_id}, checklist_message_id={checklist_message_id}")
-        if checklist_keys:
-            logger.info(f"🔍 Доступные checklist-поля: {checklist_keys}")
-        
-        # Пробуем найти информацию о измененном пункте
-        # Telegram может отправлять информацию в разных форматах
-        
-        # Сначала проверяем checklist_tasks_done (новый формат событий)
+        # 1. Достаём объекты событий (если они есть)
         checklist_tasks_done = getattr(business_msg, "checklist_tasks_done", None)
-        if checklist_tasks_done:
-            logger.info(f"🔍 Найдено checklist_tasks_done: {checklist_tasks_done}")
-            
-            # Обрабатываем marked_as_not_done_task_ids (снятие выполнения)
-            if hasattr(checklist_tasks_done, "marked_as_not_done_task_ids"):
-                undone_ids = checklist_tasks_done.marked_as_not_done_task_ids
-                if undone_ids:
-                    logger.info(f"🔄 Найдены снятые с выполнения задачи через checklist_tasks_done: {undone_ids}")
-                    # Ищем чеклист и снимаем выполнение
-                    reply_to = getattr(business_msg, "reply_to_message", None)
-                    target_checklist_id = reply_to.message_id if reply_to else None
-                    
-                    if not target_checklist_id:
-                        # Ищем по item_id
-                        all_checklists = []
-                        if user_state.checklist_message_id:
-                            all_checklists.append(("daily", user_state.checklist_message_id, user_state.tasks))
-                        for tag, tag_state in user_state.tag_checklists.items():
-                            if tag_state.checklist_message_id:
-                                all_checklists.append((tag, tag_state.checklist_message_id, tag_state.tasks))
-                        
-                        for checklist_type, msg_id, tasks in all_checklists:
-                            task_ids_in_checklist = {task.item_id for task in tasks}
-                            if all(item_id in task_ids_in_checklist for item_id in undone_ids):
-                                target_checklist_id = msg_id
-                                break
-                    
-                    updated = False
-                    if target_checklist_id and user_state.checklist_message_id == target_checklist_id:
-                        for task in user_state.tasks:
-                            if task.item_id in undone_ids:
-                                task.done = False
-                                updated = True
-                                logger.info(f"🔄 Снято выполнение дневной задачи: item_id={task.item_id}")
-                    else:
-                        for tag, tag_state in user_state.tag_checklists.items():
-                            if tag_state.checklist_message_id == target_checklist_id:
-                                for task in tag_state.tasks:
-                                    if task.item_id in undone_ids:
-                                        task.done = False
-                                        updated = True
-                                        logger.info(f"🔄 Снято выполнение теговой задачи '{tag}': item_id={task.item_id}")
-                    
-                    if not updated:
-                        # Пробуем обновить по item_id напрямую
-                        for task in user_state.tasks:
-                            if task.item_id in undone_ids:
-                                task.done = False
-                                updated = True
-                        for tag, tag_state in user_state.tag_checklists.items():
-                            for task in tag_state.tasks:
-                                if task.item_id in undone_ids:
-                                    task.done = False
-                                    updated = True
-                    
-                    if updated:
-                        save_user_state(chat_id, user_state)
-                        logger.info(f"✅ Состояние обновлено после снятия выполнения")
-                        return
-            
-            # Извлекаем marked_as_done_task_ids
-            if hasattr(checklist_tasks_done, "marked_as_done_task_ids"):
-                marked_ids = checklist_tasks_done.marked_as_done_task_ids
-                if marked_ids:
-                    logger.info(f"✅ Найдены выполненные задачи через checklist_tasks_done: {marked_ids}")
-                    
-                    # ВАЖНО: для checklist_tasks_done события приходят как отдельные сообщения
-                    # Нужно найти чеклист по reply_to_message или попробовать все чеклисты
-                    reply_to = getattr(business_msg, "reply_to_message", None)
-                    target_checklist_id = None
-                    
-                    if reply_to:
-                        target_checklist_id = reply_to.message_id
-                        logger.info(f"🔍 Чеклист определён через reply_to_message: {target_checklist_id}")
-                    else:
-                        # Если нет reply_to, ищем чеклист, который содержит все указанные item_id
-                        # Сначала пробуем найти среди всех чеклистов (и дневных, и теговых)
-                        logger.info(f"🔍 reply_to_message отсутствует, ищем чеклист по item_id среди всех чеклистов")
-                        
-                        # Собираем все чеклисты для поиска
-                        all_checklists = []
-                        if user_state.checklist_message_id:
-                            all_checklists.append(("daily", user_state.checklist_message_id, user_state.tasks))
-                        
-                        for tag, tag_state in user_state.tag_checklists.items():
-                            if tag_state.checklist_message_id:
-                                all_checklists.append((tag, tag_state.checklist_message_id, tag_state.tasks))
-                        
-                        # Ищем чеклист по позиции задач среди невыполненных задач
-                        # marked_ids - это позиции в чеклисте (1-based), а не item_id
-                        for checklist_type, msg_id, tasks in all_checklists:
-                            # Считаем невыполненные задачи
-                            unfinished_tasks_in_checklist = [t for t in tasks if not t.done]
-                            max_position = len(unfinished_tasks_in_checklist)
-                            # Проверяем, что ВСЕ marked_ids (позиции) находятся в допустимом диапазоне
-                            if max_position > 0 and all(1 <= pos <= max_position for pos in marked_ids):
-                                target_checklist_id = msg_id
-                                checklist_name = "дневной" if checklist_type == "daily" else f"теговый '{checklist_type}'"
-                                logger.info(f"🔍 Найден {checklist_name} чеклист по позиции: {target_checklist_id} (невыполненных задач: {max_position}, позиции: {marked_ids})")
-                                break
-                    
-                    # Обновляем дневной чеклист
-                    if target_checklist_id and user_state.checklist_message_id == target_checklist_id:
-                        # ВАЖНО: item_id в событиях - это позиция в чеклисте (1-based) среди невыполненных задач
-                        # При создании чеклиста мы используем позицию только для невыполненных задач
-                        # Поэтому нужно найти задачу по позиции среди невыполненных задач в том же порядке, как при создании
-                        unfinished_tasks = [t for t in user_state.tasks if not t.done]
-                        for marked_id in marked_ids:
-                            # marked_id - это позиция в чеклисте (1-based) среди невыполненных задач
-                            if 1 <= marked_id <= len(unfinished_tasks):
-                                task = unfinished_tasks[marked_id - 1]
-                                if not task.done:  # Дополнительная проверка
-                                    task.done = True
-                                    logger.info(f"✅ Обновлен дневной чеклист: позиция={marked_id}, item_id={task.item_id}, text='{task.text[:30]}', done=True")
-                                else:
-                                    logger.warning(f"⚠️ Задача на позиции {marked_id} уже выполнена: item_id={task.item_id}")
-                            else:
-                                logger.warning(f"⚠️ Позиция {marked_id} не найдена в дневном чеклисте (невыполненных задач: {len(unfinished_tasks)})")
-                        save_user_state(chat_id, user_state)
-                        return
-                    
-                    # Обновляем теговые чеклисты
-                    if target_checklist_id:
-                        for tag, tag_state in user_state.tag_checklists.items():
-                            if tag_state.checklist_message_id == target_checklist_id:
-                                # ВАЖНО: item_id в событиях - это позиция в чеклисте (1-based) среди невыполненных задач
-                                # При создании чеклиста мы используем позицию только для невыполненных задач
-                                # Поэтому нужно найти задачу по позиции среди невыполненных задач в том же порядке, как при создании
-                                unfinished_tasks = [t for t in tag_state.tasks if not t.done]
-                                for marked_id in marked_ids:
-                                    # marked_id - это позиция в чеклисте (1-based) среди невыполненных задач
-                                    if 1 <= marked_id <= len(unfinished_tasks):
-                                        task = unfinished_tasks[marked_id - 1]
-                                        if not task.done:  # Дополнительная проверка
-                                            task.done = True
-                                            logger.info(f"✅ Обновлен теговый чеклист '{tag}': позиция={marked_id}, item_id={task.item_id}, text='{task.text[:30]}', done=True")
-                                        else:
-                                            logger.warning(f"⚠️ Задача на позиции {marked_id} в чеклисте '{tag}' уже выполнена: item_id={task.item_id}")
-                                    else:
-                                        logger.warning(f"⚠️ Позиция {marked_id} не найдена в чеклисте '{tag}' (невыполненных задач: {len(unfinished_tasks)})")
-                                save_user_state(chat_id, user_state)
-                                return
-                    
-                    # Если не нашли по message_id, пробуем обновить по item_id напрямую
-                    logger.warning(f"⚠️ Не найден чеклист по message_id, пробую обновить по item_id напрямую")
-                    
-                    # Обновляем дневной чеклист по позиции (если не нашли по message_id)
-                    updated = False
-                    unfinished_tasks = [t for t in user_state.tasks if not t.done]
-                    for marked_id in marked_ids:
-                        # marked_id - это позиция в чеклисте (1-based)
-                        if 1 <= marked_id <= len(unfinished_tasks):
-                            task = unfinished_tasks[marked_id - 1]
-                            task.done = True
-                            updated = True
-                            logger.info(f"✅ Обновлен дневной чеклист (по позиции): позиция={marked_id}, item_id={task.item_id}, done=True")
-                    
-                    if updated:
-                        save_user_state(chat_id, user_state)
-                        return
-                    
-                    # Обновляем теговые чеклисты по позиции
-                    for tag, tag_state in user_state.tag_checklists.items():
-                        unfinished_tag_tasks = [t for t in tag_state.tasks if not t.done]
-                        for marked_id in marked_ids:
-                            # marked_id - это позиция в чеклисте (1-based)
-                            if 1 <= marked_id <= len(unfinished_tag_tasks):
-                                task = unfinished_tag_tasks[marked_id - 1]
-                                task.done = True
-                                updated = True
-                                logger.info(f"✅ Обновлен теговый чеклист '{tag}' (по позиции): позиция={marked_id}, item_id={task.item_id}, done=True")
-                    
-                    if updated:
-                        save_user_state(chat_id, user_state)
-                        return
-                    
-                    logger.warning(f"⚠️ Не удалось обновить задачи: не найдены item_id {marked_ids} ни в дневном, ни в теговых чеклистах")
-                    logger.warning(f"⚠️ Дневной чеклист: message_id={user_state.checklist_message_id}, задач={len(user_state.tasks)}")
-                    logger.warning(f"⚠️ Теговые чеклисты: {[(tag, ts.checklist_message_id, len(ts.tasks)) for tag, ts in user_state.tag_checklists.items()]}")
-                    return
-        
-        checklist_item_state = getattr(business_msg, "new_checklist_item_state", None) or getattr(business_msg, "checklist_item_state", None)
-        
-        if checklist_item_state and changed_item_id is None:
-            # Если это объект, пробуем извлечь данные
-            if hasattr(checklist_item_state, "item_id"):
-                changed_item_id = checklist_item_state.item_id
-            elif hasattr(checklist_item_state, "id"):
-                changed_item_id = checklist_item_state.id
-            
-            if hasattr(checklist_item_state, "is_checked"):
-                is_done = checklist_item_state.is_checked
-            elif hasattr(checklist_item_state, "checked"):
-                is_done = checklist_item_state.checked
-            elif hasattr(checklist_item_state, "state"):
-                # Возможно, состояние в поле state
-                state = checklist_item_state.state
-                if isinstance(state, bool):
-                    is_done = state
-                elif isinstance(state, str):
-                    is_done = state.lower() in ["checked", "done", "true", "1"]
-        else:
-            # Пробуем найти в других полях
-            # Проверяем new_checklist_item
-            new_checklist_item = getattr(business_msg, "new_checklist_item", None)
-            if new_checklist_item:
-                if hasattr(new_checklist_item, "item_id"):
-                    changed_item_id = new_checklist_item.item_id
-                elif hasattr(new_checklist_item, "id"):
-                    changed_item_id = new_checklist_item.id
-                
-                if hasattr(new_checklist_item, "is_checked"):
-                    is_done = new_checklist_item.is_checked
-                elif hasattr(new_checklist_item, "checked"):
-                    is_done = new_checklist_item.checked
-            
-            # Если не нашли в new_checklist_item, пробуем искать в словаре
-            if changed_item_id is None or is_done is None:
-                # Ищем в msg_dict напрямую
-                if "new_checklist_item_state" in msg_dict:
-                    item_state = msg_dict["new_checklist_item_state"]
-                    if isinstance(item_state, dict):
-                        changed_item_id = item_state.get("item_id") or item_state.get("id")
-                        is_done = item_state.get("is_checked") or item_state.get("checked")
-                        if isinstance(is_done, str):
-                            is_done = is_done.lower() in ["checked", "done", "true", "1"]
-                
-                if (changed_item_id is None or is_done is None) and "checklist_item_state" in msg_dict:
-                    item_state = msg_dict["checklist_item_state"]
-                    if isinstance(item_state, dict):
-                        changed_item_id = item_state.get("item_id") or item_state.get("id")
-                        is_done = item_state.get("is_checked") or item_state.get("checked")
-                        if isinstance(is_done, str):
-                            is_done = is_done.lower() in ["checked", "done", "true", "1"]
-        
-        # Если не удалось извлечь данные, пробуем через reply_to_message
-        # Когда пользователь отмечает пункт, Telegram может отправлять событие как reply к сообщению с чеклистом
-        if changed_item_id is None or is_done is None:
-            reply_to = getattr(business_msg, "reply_to_message", None)
-            if reply_to:
-                checklist_message_id = reply_to.message_id
-                # Пробуем извлечь информацию из текста или других полей
-                logger.info(f"🔍 Проверяю reply_to_message для chat_id={chat_id}, reply_message_id={checklist_message_id}")
-        
-        # Если всё ещё не нашли, логируем всю структуру для отладки
-        if changed_item_id is None or is_done is None:
-            logger.warning(f"⚠️ Не удалось извлечь item_id или is_done из события чеклиста для chat_id={chat_id}")
-            logger.warning(f"⚠️ Структура business_msg: {list(msg_dict.keys())[:20]}...")  # Первые 20 ключей
+        checklist_tasks_added = getattr(business_msg, "checklist_tasks_added", None)
+        if not checklist_tasks_done and not checklist_tasks_added:
+            logger.info(
+                "ℹ️ handle_checklist_state_update: нет checklist_tasks_done/added для chat_id=%s",
+                chat_id,
+            )
             return
+
+        # 2. Определяем checklist_message_id (original_message_id), к которому относится событие
+        # Приоритет: checklist_tasks_done.checklist_message.message_id > определение по item_id > reply_to_message > business_msg.message_id
+        original_message_id = None
+        identified_by_item_id = False  # Флаг: определили ли мы чеклист по item_id (без checklist_message)
+
+        # 1) Пытаемся взять ID из checklist_tasks_done.checklist_message
+        if checklist_tasks_done is not None:
+            checklist_message = getattr(checklist_tasks_done, "checklist_message", None)
+            if checklist_message is not None:
+                original_message_id = getattr(checklist_message, "message_id", None)
+                if original_message_id is None:
+                    try:
+                        msg_dict = checklist_message.to_dict()
+                        original_message_id = msg_dict.get("message_id")
+                    except Exception:
+                        pass
+                
+                if original_message_id is not None:
+                    logger.info(
+                        "🔍 checklist_tasks_done: используем checklist_message.message_id=%s для chat_id=%s",
+                        original_message_id,
+                        chat_id,
+                    )
         
-        logger.info(f"✅ Извлечены данные: item_id={changed_item_id}, is_done={is_done}, checklist_message_id={checklist_message_id}")
-        
+        # 2) Если checklist_message отсутствует, определяем чеклист по item_id из marked_as_done_task_ids
+        # ВАЖНО: item_id могут совпадать между чеклистами, поэтому если определили по item_id,
+        # нужно обновлять ВСЕ чеклисты, где есть такой item_id
+        if original_message_id is None and checklist_tasks_done is not None:
+            done_ids = set(getattr(checklist_tasks_done, "marked_as_done_task_ids", []) or [])
+            not_done_ids = set(getattr(checklist_tasks_done, "marked_as_not_done_task_ids", []) or [])
+            all_ids = done_ids | not_done_ids
+            
+            if all_ids:
+                logger.info(
+                    "🔍 Определяем чеклист по item_id для chat_id=%s: done_ids=%s, not_done_ids=%s",
+                    chat_id,
+                    sorted(done_ids),
+                    sorted(not_done_ids),
+                )
+                
+                # Логируем все item_id в дневном чеклисте для отладки
+                daily_item_ids = [task.item_id for task in user_state.tasks]
+                logger.info(
+                    "🔍 DEBUG: дневной чеклист для chat_id=%s: item_ids=%s, checklist_message_id=%s",
+                    chat_id,
+                    daily_item_ids,
+                    user_state.checklist_message_id,
+                )
+                
+                # ВАЖНО: Приоритет дневному чеклисту, так как пользователь чаще взаимодействует с ним
+                # и если item_id совпадает, лучше обновить дневной, а не теговый
+                found_daily = False
+                for task in user_state.tasks:
+                    if task.item_id in all_ids:
+                        found_daily = True
+                        logger.info(
+                            "🔍 Найден дневной чеклист по item_id=%s: message_id=%s для chat_id=%s",
+                            task.item_id,
+                            user_state.checklist_message_id,
+                            chat_id,
+                        )
+                        break
+                
+                # Проверяем теговые чеклисты (второй приоритет)
+                found_tag_checklists = []  # Список найденных теговых чеклистов с таким item_id
+                for tag, tag_state in user_state.tag_checklists.items():
+                    tag_item_ids = [task.item_id for task in tag_state.tasks]
+                    logger.info(
+                        "🔍 DEBUG: теговый чеклист '%s' для chat_id=%s: item_ids=%s, checklist_message_id=%s",
+                        tag,
+                        chat_id,
+                        tag_item_ids,
+                        tag_state.checklist_message_id,
+                    )
+                    for task in tag_state.tasks:
+                        if task.item_id in all_ids:
+                            found_tag_checklists.append((tag, tag_state.checklist_message_id))
+                            logger.info(
+                                "🔍 Найден теговый чеклист '%s' по item_id=%s: message_id=%s для chat_id=%s",
+                                tag,
+                                task.item_id,
+                                tag_state.checklist_message_id,
+                                chat_id,
+                            )
+                            break
+                
+                # Если нашли чеклисты по item_id, используем первый найденный для original_message_id
+                # Приоритет: дневной > теговый
+                if found_daily:
+                    original_message_id = user_state.checklist_message_id
+                    identified_by_item_id = True
+                elif found_tag_checklists:
+                    original_message_id = found_tag_checklists[0][1]  # Используем первый теговый
+                    identified_by_item_id = True
+
+        # Если не получилось из checklist_tasks_done, пробуем checklist_tasks_added
+        if original_message_id is None and checklist_tasks_added is not None:
+            checklist_message = getattr(checklist_tasks_added, "checklist_message", None)
+            if checklist_message is not None:
+                original_message_id = getattr(checklist_message, "message_id", None)
+                
+                # Если message_id нет напрямую, пробуем через to_dict()
+                if original_message_id is None:
+                    try:
+                        msg_dict = checklist_message.to_dict()
+                        original_message_id = msg_dict.get("message_id")
+                    except Exception:
+                        pass
+                
+                if original_message_id is not None:
+                    logger.info(
+                        "🔍 checklist_tasks_added: используем checklist_message.message_id=%s "
+                        "как original_message_id для chat_id=%s",
+                        original_message_id,
+                        chat_id,
+                    )
+
+        # 2) Если по каким-то причинам checklist_message нет —
+        #    используем reply_to_message, как раньше
+        if original_message_id is None:
+            reply_to = getattr(business_msg, "reply_to_message", None)
+            if reply_to is not None:
+                original_message_id = getattr(reply_to, "message_id", None)
+                if original_message_id is not None:
+                    logger.info(
+                        "🔍 Событие чеклиста через reply_to_message: original_message_id=%s",
+                        original_message_id,
+                    )
+
+        # 3) Если и этого нет — в самый последний момент fallback на business_msg.message_id
+        if original_message_id is None:
+            original_message_id = getattr(business_msg, "message_id", None)
+            if original_message_id is not None:
+                logger.info(
+                    "🔍 Событие чеклиста напрямую: original_message_id=%s (message_id сервисного сообщения)",
+                    original_message_id,
+                )
+
+        if original_message_id is None:
+            logger.warning(
+                "⚠️ handle_checklist_state_update: не удалось определить original_message_id "
+                "для chat_id=%s, message_id=%s",
+                chat_id,
+                getattr(business_msg, "message_id", None),
+            )
+            return
+
         # Определяем, какой чеклист изменился
+        target_checklist_type = None  # "daily" или tag name
+        target_checklist_id = None
+        target_checklist_title = None
+
+        if user_state.checklist_message_id == original_message_id:
+            target_checklist_type = "daily"
+            target_checklist_id = original_message_id
+            target_checklist_title = get_checklist_title_from_date(user_state.date) if user_state.date else "дневной"
+            logger.info("🔍 Определён дневной чеклист: message_id=%s, title=%s", target_checklist_id, target_checklist_title)
+
+        if not target_checklist_type:
+            for tag, tag_state in user_state.tag_checklists.items():
+                if tag_state.checklist_message_id == original_message_id:
+                    target_checklist_type = tag
+                    target_checklist_id = original_message_id
+                    target_checklist_title = tag
+                    logger.info("🔍 Определён теговый чеклист: tag='%s', message_id=%s", tag, target_checklist_id)
+                    break
+
+        if not target_checklist_type:
+            logger.warning(
+                "⚠️ Не удалось определить чеклист по message_id для chat_id=%s, original_message_id=%s. "
+                "Дневной чеклист: message_id=%s, Теговые чеклисты: %s",
+                chat_id,
+                original_message_id,
+                user_state.checklist_message_id,
+                [(tag, ts.checklist_message_id) for tag, ts in user_state.tag_checklists.items()],
+            )
+            return
+
+        # Используем target_checklist_type и target_checklist_id для дальнейшей обработки
+        checklist_type = "daily" if target_checklist_type == "daily" else "tag"
+        tag_name = None if target_checklist_type == "daily" else target_checklist_type
+        checklist_message_id = original_message_id
+
+        # 4. Собираем id выполненных / невыполненных пунктов
+        done_ids: set[int] = set()
+        not_done_ids: set[int] = set()
+        if checklist_tasks_done is not None:
+            done_ids = set(getattr(checklist_tasks_done, "marked_as_done_task_ids", []) or [])
+            not_done_ids = set(getattr(checklist_tasks_done, "marked_as_not_done_task_ids", []) or [])
+
+        logger.info(
+            "🔧 checklist update: chat_id=%s type=%s tag=%s checklist_message_id=%s done_ids=%s not_done_ids=%s",
+            chat_id,
+            checklist_type,
+            tag_name,
+            checklist_message_id,
+            sorted(done_ids),
+            sorted(not_done_ids),
+        )
+
+        # 5. Обновляем задачи в нужном чек-листе
+        # ВАЖНО: если определили чеклист по item_id (а не по checklist_message.message_id),
+        # нужно найти задачу по item_id в определённом чеклисте, получить её текст,
+        # и синхронизировать по тексту во всех чеклистах (а не по item_id, так как item_id могут совпадать)
         updated = False
         
-        # Проверяем дневной чеклист
-        if user_state.checklist_message_id == checklist_message_id:
-            # Это дневной чеклист
-            for task in user_state.tasks:
-                if task.item_id == changed_item_id:
-                    task.done = is_done
-                    updated = True
-                    logger.info(f"✅ Обновлен дневной чеклист: item_id={changed_item_id}, done={is_done}")
-                    break
+        if identified_by_item_id:
+            # Определили чеклист по item_id - это означает, что checklist_message отсутствует
+            # Находим задачу по item_id в определённом чеклисте, обновляем её и синхронизируем по тексту
+            # Это безопасно, потому что мы синхронизируем по тексту задачи, которую нашли в определённом чеклисте
+            logger.info(
+                "🔄 Определено по item_id: обновляем задачи в определённом чеклисте и синхронизируем по тексту для done_ids=%s, not_done_ids=%s",
+                sorted(done_ids),
+                sorted(not_done_ids),
+            )
             
-            if not updated:
-                logger.warning(f"⚠️ Не найден item_id={changed_item_id} в дневном чеклисте для chat_id={chat_id}")
-        else:
-            # Проверяем теговые чеклисты
-            for tag, tag_state in user_state.tag_checklists.items():
-                if tag_state.checklist_message_id == checklist_message_id:
-                    # Нашли соответствующий теговый чеклист
-                    for task in tag_state.tasks:
-                        if task.item_id == changed_item_id:
-                            task.done = is_done
-                            updated = True
-                            logger.info(f"✅ Обновлен теговый чеклист '{tag}': item_id={changed_item_id}, done={is_done}")
+            # Находим задачи по item_id в определённом чеклисте, обновляем их и синхронизируем по тексту
+            # Сначала обрабатываем done_ids
+            for item_id in done_ids:
+                task_text = None
+                task_found = False
+                
+                # Ищем задачу в определённом чеклисте
+                if checklist_type == "daily":
+                    for task in user_state.tasks:
+                        if task.item_id == item_id:
+                            task_text = task.text
+                            task_found = True
+                            # Обновляем эту задачу
+                            if not task.done:
+                                task.done = True
+                                updated = True
+                                logger.info("✅ Дневная задача выполнена: id=%s text=%r", task.item_id, task.text)
                             break
-                    
-                    if not updated:
-                        logger.warning(f"⚠️ Не найден item_id={changed_item_id} в теговом чеклисте '{tag}' для chat_id={chat_id}")
-                    break
-        
-        if updated:
-            # Сохраняем состояние в SQLite
-            save_user_state(chat_id, user_state)
-            logger.info(f"✅ Состояние сохранено для chat_id={chat_id}")
-        else:
-            logger.warning(f"⚠️ Не найден чеклист с message_id={checklist_message_id} для chat_id={chat_id}")
+                else:
+                    # Теговый чеклист
+                    tag_state = user_state.tag_checklists.get(tag_name)
+                    if tag_state:
+                        for task in tag_state.tasks:
+                            if task.item_id == item_id:
+                                task_text = task.text
+                                task_found = True
+                                # Обновляем эту задачу
+                                if not task.done:
+                                    task.done = True
+                                    updated = True
+                                    logger.info("✅ Теговая задача [%s] выполнена: id=%s text=%r", tag_name, task.item_id, task.text)
+                                break
+                
+                # Синхронизируем по тексту во всех чеклистах, если задача найдена
+                if task_found and task_text:
+                    sync_updated = sync_task_status_by_text(user_state, task_text, True)
+                    if sync_updated:
+                        updated = True
+                        logger.info("🔄 Синхронизировано по тексту после обновления по item_id: text=%r", task_text)
             
+            # Теперь обрабатываем not_done_ids
+            for item_id in not_done_ids:
+                task_text = None
+                task_found = False
+                
+                # Ищем задачу в определённом чеклисте
+                if checklist_type == "daily":
+                    for task in user_state.tasks:
+                        if task.item_id == item_id:
+                            task_text = task.text
+                            task_found = True
+                            # Обновляем эту задачу
+                            if task.done:
+                                task.done = False
+                                updated = True
+                                logger.info("🔄 Дневная задача снята: id=%s text=%r", task.item_id, task.text)
+                            break
+                else:
+                    # Теговый чеклист
+                    tag_state = user_state.tag_checklists.get(tag_name)
+                    if tag_state:
+                        for task in tag_state.tasks:
+                            if task.item_id == item_id:
+                                task_text = task.text
+                                task_found = True
+                                # Обновляем эту задачу
+                                if task.done:
+                                    task.done = False
+                                    updated = True
+                                    logger.info("🔄 Теговая задача [%s] снята: id=%s text=%r", tag_name, task.item_id, task.text)
+                                break
+                
+                # Синхронизируем по тексту во всех чеклистах, если задача найдена
+                if task_found and task_text:
+                    sync_updated = sync_task_status_by_text(user_state, task_text, False)
+                    if sync_updated:
+                        updated = True
+                        logger.info("🔄 Синхронизировано по тексту после обновления по item_id: text=%r", task_text)
+        else:
+            # Определили чеклист точно по checklist_message.message_id - обновляем задачи в нём и синхронизируем по тексту
+            if checklist_type == "daily":
+                for task in user_state.tasks:
+                    if task.item_id in done_ids and not task.done:
+                        task.done = True
+                        updated = True
+                        logger.info("✅ Дневная задача выполнена: id=%s text=%r", task.item_id, task.text)
+                        # Синхронизируем по тексту во всех чеклистах
+                        sync_updated = sync_task_status_by_text(user_state, task.text, True)
+                        if sync_updated:
+                            updated = True
+                    if task.item_id in not_done_ids and task.done:
+                        task.done = False
+                        updated = True
+                        logger.info("🔄 Дневная задача снята: id=%s text=%r", task.item_id, task.text)
+                        # Синхронизируем по тексту во всех чеклистах
+                        sync_updated = sync_task_status_by_text(user_state, task.text, False)
+                        if sync_updated:
+                            updated = True
+            else:
+                tag_state = user_state.tag_checklists.get(tag_name)
+                if tag_state is None:
+                    logger.warning(
+                        "⚠️ handle_checklist_state_update: не найден tag_state для тега %r, хотя checklist_type='tag'",
+                        tag_name,
+                    )
+                else:
+                    for task in tag_state.tasks:
+                        if task.item_id in done_ids and not task.done:
+                            task.done = True
+                            updated = True
+                            logger.info("✅ Теговая задача [%s] выполнена: id=%s text=%r", tag_name, task.item_id, task.text)
+                            # Синхронизируем по тексту во всех чеклистах
+                            sync_updated = sync_task_status_by_text(user_state, task.text, True)
+                            if sync_updated:
+                                updated = True
+                        if task.item_id in not_done_ids and task.done:
+                            task.done = False
+                            updated = True
+                            logger.info("🔄 Теговая задача [%s] снята: id=%s text=%r", tag_name, task.item_id, task.text)
+                            # Синхронизируем по тексту во всех чеклистах
+                            sync_updated = sync_task_status_by_text(user_state, task.text, False)
+                            if sync_updated:
+                                updated = True
+
+        # 6. Сохраняем состояние, если что-то изменилось
+        if updated:
+            save_user_state(chat_id, user_state)
+            logger.info(
+                "💾 Состояние user_state сохранено после checklist_update: chat_id=%s type=%s tag=%s",
+                chat_id,
+                checklist_type,
+                tag_name,
+            )
+        else:
+            logger.info(
+                "ℹ️ checklist_update не изменил состояние user_state: chat_id=%s checklist_message_id=%s",
+                chat_id,
+                checklist_message_id,
+            )
+
     except Exception as e:
-        logger.error(f"❌ Ошибка при обработке изменения состояния чеклиста для chat_id={chat_id}: {e}", exc_info=True)
-        # Не пробрасываем ошибку, чтобы не сломать обработку других сообщений
+        logger.error(
+            "❌ Ошибка в handle_checklist_state_update для chat_id=%s: %s",
+            chat_id,
+            e,
+            exc_info=True,
+        )
 
