@@ -269,9 +269,6 @@ async def create_checklist_for_user(
         except Exception as e:
             logger.error(f"❌ Ошибка при создании чеклиста для chat_id={chat_id}: {e}", exc_info=True)
             # Ничего не пробрасываем — просто логируем
-        except Exception as e:
-            logger.error(f"❌ Ошибка при создании чеклиста для chat_id={chat_id}: {e}", exc_info=True)
-            # Ничего не пробрасываем — просто логируем
 
 
 async def update_checklist_for_user(
