@@ -491,6 +491,12 @@ async def handle_time_input(update: Update, context: ContextTypes.DEFAULT_TYPE, 
         save_user_state(chat_id, user_state)
         return
     
+    # Перезагружаем состояние после apply_user_time (чеклист мог быть создан)
+    user_state = load_user_state(chat_id)
+    if not user_state:
+        logger.error(f"❌ Не удалось загрузить user_state после apply_user_time для chat_id={chat_id}")
+        return
+    
     # Добавляем сообщение с временем в список служебных
     user_state.service_message_ids.append(business_msg.message_id)
     
@@ -503,14 +509,17 @@ async def handle_time_input(update: Update, context: ContextTypes.DEFAULT_TYPE, 
     )
     user_state.service_message_ids.append(confirm_msg.message_id)
     
-    # Удаляем все служебные сообщения
+    # Удаляем все служебные сообщения (включая интро)
     for mid in user_state.service_message_ids:
-        await safe_delete(
-            context.bot,
-            user_state.business_connection_id,
-            chat_id,
-            mid,
-        )
+        try:
+            await safe_delete(
+                context.bot,
+                user_state.business_connection_id,
+                chat_id,
+                mid,
+            )
+        except Exception as e:
+            logger.warning(f"⚠️ Не удалось удалить служебное сообщение {mid}: {e}")
     user_state.service_message_ids.clear()
     save_user_state(chat_id, user_state)
 
