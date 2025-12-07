@@ -266,7 +266,6 @@ async def create_checklist_for_user(
             
             # Проверка 2: финальная проверка после небольшой задержки (на случай если другой запрос только что сохранил)
             # Перезагружаем состояние еще раз для финальной проверки
-            import asyncio
             await asyncio.sleep(0.1)  # Небольшая задержка для синхронизации БД
             very_fresh_state = load_user_state(chat_id)
             if very_fresh_state and very_fresh_state.checklist_message_id is not None and very_fresh_state.checklist_message_id != msg.message_id:
