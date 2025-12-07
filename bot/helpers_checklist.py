@@ -218,17 +218,24 @@ async def create_checklist_for_user(
         )
         
         # ПЕРЕД сохранением - ещё раз проверяем, не был ли создан чеклист другим запросом
+        # ВАЖНО: проверяем ДО сохранения checklist_message_id, чтобы избежать гонки
         final_check_state = load_user_state(chat_id)
-        if final_check_state and final_check_state.checklist_message_id is not None:
-            logger.warning(f"⚠️ Чеклист был создан другим запросом во время создания, удаляю дубликат message_id={msg.message_id} для chat_id={chat_id}")
+        if final_check_state and final_check_state.checklist_message_id is not None and final_check_state.checklist_message_id != msg.message_id:
+            # Чеклист был создан другим запросом - удаляем наш дубликат
+            logger.warning(
+                f"⚠️ Чеклист был создан другим запросом во время создания, удаляю дубликат "
+                f"message_id={msg.message_id} для chat_id={chat_id}. "
+                f"Существующий чеклист: message_id={final_check_state.checklist_message_id}"
+            )
             try:
                 await bot.delete_business_messages(
                     business_connection_id=user_state.business_connection_id,
                     chat_id=chat_id,
                     message_ids=[msg.message_id],
                 )
+                logger.info(f"✅ Дубликат чеклиста удален: message_id={msg.message_id}")
             except Exception as e:
-                logger.error(f"❌ Ошибка при удалении дубликата чеклиста: {e}")
+                logger.error(f"❌ Ошибка при удалении дубликата чеклиста: {e}", exc_info=True)
             # Используем существующий чеклист
             user_state.checklist_message_id = final_check_state.checklist_message_id
             user_state.date = final_check_state.date
@@ -237,10 +244,11 @@ async def create_checklist_for_user(
             await update_checklist_for_user(bot, chat_id, user_state)
             return
         
+        # Сохраняем checklist_message_id только если дубликата нет
         user_state.checklist_message_id = msg.message_id
         # Явно обновляем состояние
         save_user_state(chat_id, user_state)
-        logger.info(f"✅ Чеклист создан для chat_id={chat_id}, message_id={msg.message_id}")
+        logger.info(f"✅ Чеклист создан для chat_id={chat_id}, message_id={msg.message_id}, title='{checklist_title}'")
     except Exception as e:
         logger.error(f"❌ Ошибка при создании чеклиста для chat_id={chat_id}: {e}", exc_info=True)
         # Ничего не пробрасываем — просто логируем
