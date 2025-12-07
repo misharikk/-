@@ -326,7 +326,6 @@ async def create_checklist_for_user(
                     try:
                         await bot.delete_business_messages(
                             business_connection_id=user_state.business_connection_id,
-                            chat_id=chat_id,
                             message_ids=[msg.message_id],
                         )
                         logger.info(f"✅ Дубликат чеклиста удален: message_id={msg.message_id}")
@@ -569,7 +568,6 @@ async def add_task_to_tag_checklist(
                     try:
                         await bot.delete_business_messages(
                             business_connection_id=user_state.business_connection_id,
-                            chat_id=chat_id,
                             message_ids=[msg.message_id],
                         )
                     except Exception as e:
