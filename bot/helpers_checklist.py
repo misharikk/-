@@ -17,6 +17,8 @@ logger = logging.getLogger(__name__)
 # Блокировки для предотвращения одновременного создания чеклистов для одного пользователя
 # Ключ: chat_id, значение: asyncio.Lock
 _checklist_creation_locks: dict[int, asyncio.Lock] = {}
+# Блокировка для создания новых lock'ов (защита от race condition)
+_lock_creation_lock = asyncio.Lock()
 
 # Глобальный set для отслеживания обработанных событий чеклиста (защита от дубликатов)
 # Ключ: (target_checklist_type, tuple(marked_as_done_ids), tuple(marked_as_undone_ids))
@@ -105,11 +107,11 @@ async def create_checklist_for_user(
     
     ВАЖНО: Использует блокировку для предотвращения одновременного создания чеклистов.
     """
-    # Получаем или создаем блокировку для этого пользователя
-    if chat_id not in _checklist_creation_locks:
-        _checklist_creation_locks[chat_id] = asyncio.Lock()
-    
-    lock = _checklist_creation_locks[chat_id]
+    # Получаем или создаем блокировку для этого пользователя (thread-safe)
+    async with _lock_creation_lock:
+        if chat_id not in _checklist_creation_locks:
+            _checklist_creation_locks[chat_id] = asyncio.Lock()
+        lock = _checklist_creation_locks[chat_id]
     
     # Используем блокировку для предотвращения одновременного создания
     async with lock:
