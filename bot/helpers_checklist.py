@@ -162,26 +162,84 @@ async def create_checklist_for_user(
                 return
             
             # 5. Если чеклиста ещё нет — создаём новый
-            # ВАЖНО: перезагружаем состояние перед созданием, чтобы избежать дублирования при конкурентных запросах
+            # ВАЖНО: Используем атомарную транзакцию ДО отправки в Telegram, чтобы предотвратить дублирование
+            from db import get_connection
+            import sqlite3
+            from state import load_user_state
+            
             # Обновляем дату только если она изменилась или не была установлена
             if user_state.date != current_user_date:
                 user_state.date = current_user_date
                 save_user_state(chat_id, user_state)
             
-            # Перезагружаем состояние из БД перед созданием, чтобы убедиться, что чеклист не был создан другим запросом
-            from state import load_user_state
-            fresh_user_state = load_user_state(chat_id)
-            if fresh_user_state and fresh_user_state.checklist_message_id is not None:
-                # Чеклист был создан другим запросом - используем его
-                logger.info(f"⏭️ Чеклист уже существует (создан другим запросом), обновляю состояние для chat_id={chat_id}, message_id={fresh_user_state.checklist_message_id}")
-                user_state.checklist_message_id = fresh_user_state.checklist_message_id
-                user_state.date = fresh_user_state.date
-                user_state.tasks = fresh_user_state.tasks
-                save_user_state(chat_id, user_state)
-                await update_checklist_for_user(bot, chat_id, user_state)
-                return
-
-            logger.info(f"🔨 Начинаю создание чеклиста для chat_id={chat_id}")
+            # КРИТИЧЕСКИ ВАЖНО: Используем BEGIN IMMEDIATE для эксклюзивной блокировки БД
+            # Это гарантирует, что только один запрос сможет проверить и установить checklist_message_id
+            conn = get_connection()
+            try:
+                cursor = conn.cursor()
+                # BEGIN IMMEDIATE блокирует БД для записи, другие запросы будут ждать
+                cursor.execute("BEGIN IMMEDIATE")
+                
+                # Проверяем, не был ли чеклист уже создан другим запросом
+                cursor.execute(
+                    "SELECT checklist_message_id FROM user_state WHERE chat_id = ?",
+                    (chat_id,)
+                )
+                row = cursor.fetchone()
+                
+                if row and row[0] is not None:
+                    # Чеклист уже создан другим запросом - откатываем транзакцию и используем существующий
+                    conn.rollback()
+                    logger.info(f"⏭️ Чеклист уже существует (атомарная проверка ДО отправки), обновляю состояние для chat_id={chat_id}, message_id={row[0]}")
+                    fresh_user_state = load_user_state(chat_id)
+                    if fresh_user_state:
+                        user_state.checklist_message_id = fresh_user_state.checklist_message_id
+                        user_state.date = fresh_user_state.date
+                        user_state.tasks = fresh_user_state.tasks
+                        save_user_state(chat_id, user_state)
+                        await update_checklist_for_user(bot, chat_id, user_state)
+                    return
+                
+                # Устанавливаем временный маркер, чтобы другие запросы знали, что чеклист создается
+                # Используем специальное значение -1 как маркер "в процессе создания"
+                cursor.execute(
+                    "UPDATE user_state SET checklist_message_id = -1 WHERE chat_id = ? AND checklist_message_id IS NULL",
+                    (chat_id,)
+                )
+                rows_updated = cursor.rowcount
+                conn.commit()
+                
+                if rows_updated == 0:
+                    # Не удалось установить маркер - значит другой запрос уже начал создание
+                    conn.rollback()
+                    logger.info(f"⏭️ Другой запрос уже начал создание чеклиста (маркер не установлен), обновляю состояние для chat_id={chat_id}")
+                    fresh_user_state = load_user_state(chat_id)
+                    if fresh_user_state and fresh_user_state.checklist_message_id is not None:
+                        user_state.checklist_message_id = fresh_user_state.checklist_message_id
+                        user_state.date = fresh_user_state.date
+                        user_state.tasks = fresh_user_state.tasks
+                        save_user_state(chat_id, user_state)
+                        await update_checklist_for_user(bot, chat_id, user_state)
+                    return
+                
+                # Маркер установлен успешно - теперь можем безопасно создавать чеклист
+                logger.info(f"🔨 Начинаю создание чеклиста для chat_id={chat_id} (маркер установлен)")
+                
+            except sqlite3.Error as e:
+                logger.error(f"❌ Ошибка SQLite при атомарной проверке: {e}", exc_info=True)
+                conn.rollback()
+                # Fallback: проверяем без транзакции
+                fresh_user_state = load_user_state(chat_id)
+                if fresh_user_state and fresh_user_state.checklist_message_id is not None:
+                    logger.info(f"⏭️ Fallback: чеклист уже существует, обновляю состояние для chat_id={chat_id}")
+                    user_state.checklist_message_id = fresh_user_state.checklist_message_id
+                    user_state.date = fresh_user_state.date
+                    user_state.tasks = fresh_user_state.tasks
+                    save_user_state(chat_id, user_state)
+                    await update_checklist_for_user(bot, chat_id, user_state)
+                    return
+            finally:
+                conn.close()
             
             # Если задач нет, создаем автоматическую задачу
             if not user_state.tasks:
@@ -215,9 +273,22 @@ async def create_checklist_for_user(
                     text=task_text,
                 ))
 
-            # Если нет невыполненных задач - не создаем чеклист
+            # Если нет невыполненных задач - не создаем чеклист, но снимаем маркер
             if not tasks:
                 logger.info(f"⏭️ Нет невыполненных задач для создания чеклиста для chat_id={chat_id}, пропускаем")
+                # Снимаем маркер
+                conn = get_connection()
+                try:
+                    cursor = conn.cursor()
+                    cursor.execute(
+                        "UPDATE user_state SET checklist_message_id = NULL WHERE chat_id = ? AND checklist_message_id = -1",
+                        (chat_id,)
+                    )
+                    conn.commit()
+                except Exception as e:
+                    logger.error(f"❌ Ошибка при снятии маркера: {e}", exc_info=True)
+                finally:
+                    conn.close()
                 return
 
             checklist = InputChecklist(
@@ -234,27 +305,21 @@ async def create_checklist_for_user(
                 checklist=checklist,
             )
             
-            # ВАЖНО: Используем атомарную операцию UPDATE с условием для предотвращения дублирования
-            # Пытаемся обновить checklist_message_id только если он еще не установлен (NULL)
-            from db import get_connection
-            import sqlite3
-            
+            # Обновляем checklist_message_id с реальным значением (заменяем маркер -1)
             conn = get_connection()
             try:
-                # Используем транзакцию с блокировкой для атомарной операции
                 cursor = conn.cursor()
-                # Пытаемся обновить только если checklist_message_id IS NULL
                 cursor.execute(
-                    "UPDATE user_state SET checklist_message_id = ? WHERE chat_id = ? AND checklist_message_id IS NULL",
+                    "UPDATE user_state SET checklist_message_id = ? WHERE chat_id = ? AND checklist_message_id = -1",
                     (msg.message_id, chat_id)
                 )
                 rows_updated = cursor.rowcount
                 conn.commit()
                 
                 if rows_updated == 0:
-                    # checklist_message_id уже был установлен другим запросом - удаляем дубликат
+                    # Маркер был изменен другим запросом - удаляем дубликат
                     logger.warning(
-                        f"⚠️ Чеклист был создан другим запросом (атомарная проверка), удаляю дубликат "
+                        f"⚠️ Маркер был изменен другим запросом, удаляю дубликат "
                         f"message_id={msg.message_id} для chat_id={chat_id}. "
                         f"title={checklist_title}"
                     )
@@ -284,24 +349,9 @@ async def create_checklist_for_user(
                     save_user_state(chat_id, user_state)
                     logger.info(f"✅ Чеклист создан для chat_id={chat_id}, message_id={msg.message_id}, title='{checklist_title}'")
             except sqlite3.Error as e:
-                logger.error(f"❌ Ошибка SQLite при атомарном обновлении checklist_message_id: {e}", exc_info=True)
+                logger.error(f"❌ Ошибка SQLite при обновлении checklist_message_id: {e}", exc_info=True)
                 conn.rollback()
-                # Fallback: используем старый метод
-                final_check_state = load_user_state(chat_id)
-                if final_check_state and final_check_state.checklist_message_id is not None and final_check_state.checklist_message_id != msg.message_id:
-                    logger.warning(f"⚠️ Fallback: дубликат обнаружен, удаляю message_id={msg.message_id}")
-                    try:
-                        await bot.delete_business_messages(
-                            business_connection_id=user_state.business_connection_id,
-                            chat_id=chat_id,
-                            message_ids=[msg.message_id],
-                        )
-                    except Exception:
-                        pass
-                    user_state.checklist_message_id = final_check_state.checklist_message_id
-                    save_user_state(chat_id, user_state)
-                    await update_checklist_for_user(bot, chat_id, user_state)
-                    return
+                # Fallback: просто сохраняем в памяти
                 user_state.checklist_message_id = msg.message_id
                 save_user_state(chat_id, user_state)
                 logger.info(f"✅ Чеклист создан (fallback) для chat_id={chat_id}, message_id={msg.message_id}, title='{checklist_title}'")
