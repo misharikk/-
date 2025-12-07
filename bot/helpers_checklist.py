@@ -234,68 +234,79 @@ async def create_checklist_for_user(
                 checklist=checklist,
             )
             
-            # ПЕРЕД сохранением - ещё раз проверяем, не был ли создан чеклист другим запросом
-            # ВАЖНО: проверяем ДО сохранения checklist_message_id, чтобы избежать гонки
-            # Делаем несколько проверок для максимальной надежности
-            final_check_state = load_user_state(chat_id)
+            # ВАЖНО: Используем атомарную операцию UPDATE с условием для предотвращения дублирования
+            # Пытаемся обновить checklist_message_id только если он еще не установлен (NULL)
+            from db import get_connection
+            import sqlite3
             
-            # Проверка 1: по checklist_message_id
-            if final_check_state and final_check_state.checklist_message_id is not None and final_check_state.checklist_message_id != msg.message_id:
-                # Чеклист был создан другим запросом - удаляем наш дубликат
-                logger.warning(
-                    f"⚠️ Чеклист был создан другим запросом (проверка 1: по message_id), удаляю дубликат "
-                    f"message_id={msg.message_id} для chat_id={chat_id}. "
-                    f"Существующий: message_id={final_check_state.checklist_message_id}, title={checklist_title}"
+            conn = get_connection()
+            try:
+                # Используем транзакцию с блокировкой для атомарной операции
+                cursor = conn.cursor()
+                # Пытаемся обновить только если checklist_message_id IS NULL
+                cursor.execute(
+                    "UPDATE user_state SET checklist_message_id = ? WHERE chat_id = ? AND checklist_message_id IS NULL",
+                    (msg.message_id, chat_id)
                 )
-                try:
-                    await bot.delete_business_messages(
-                        business_connection_id=user_state.business_connection_id,
-                        chat_id=chat_id,
-                        message_ids=[msg.message_id],
+                rows_updated = cursor.rowcount
+                conn.commit()
+                
+                if rows_updated == 0:
+                    # checklist_message_id уже был установлен другим запросом - удаляем дубликат
+                    logger.warning(
+                        f"⚠️ Чеклист был создан другим запросом (атомарная проверка), удаляю дубликат "
+                        f"message_id={msg.message_id} для chat_id={chat_id}. "
+                        f"title={checklist_title}"
                     )
-                    logger.info(f"✅ Дубликат чеклиста удален: message_id={msg.message_id}")
-                except Exception as e:
-                    logger.error(f"❌ Ошибка при удалении дубликата чеклиста: {e}", exc_info=True)
-                # Используем существующий чеклист
-                user_state.checklist_message_id = final_check_state.checklist_message_id
-                user_state.date = final_check_state.date
-                user_state.tasks = final_check_state.tasks
+                    try:
+                        await bot.delete_business_messages(
+                            business_connection_id=user_state.business_connection_id,
+                            chat_id=chat_id,
+                            message_ids=[msg.message_id],
+                        )
+                        logger.info(f"✅ Дубликат чеклиста удален: message_id={msg.message_id}")
+                    except Exception as e:
+                        logger.error(f"❌ Ошибка при удалении дубликата чеклиста: {e}", exc_info=True)
+                    
+                    # Загружаем актуальное состояние
+                    final_state = load_user_state(chat_id)
+                    if final_state:
+                        user_state.checklist_message_id = final_state.checklist_message_id
+                        user_state.date = final_state.date
+                        user_state.tasks = final_state.tasks
+                        save_user_state(chat_id, user_state)
+                        await update_checklist_for_user(bot, chat_id, user_state)
+                    return
+                else:
+                    # Успешно обновили - обновляем user_state в памяти
+                    user_state.checklist_message_id = msg.message_id
+                    # Обновляем остальные поля тоже
+                    save_user_state(chat_id, user_state)
+                    logger.info(f"✅ Чеклист создан для chat_id={chat_id}, message_id={msg.message_id}, title='{checklist_title}'")
+            except sqlite3.Error as e:
+                logger.error(f"❌ Ошибка SQLite при атомарном обновлении checklist_message_id: {e}", exc_info=True)
+                conn.rollback()
+                # Fallback: используем старый метод
+                final_check_state = load_user_state(chat_id)
+                if final_check_state and final_check_state.checklist_message_id is not None and final_check_state.checklist_message_id != msg.message_id:
+                    logger.warning(f"⚠️ Fallback: дубликат обнаружен, удаляю message_id={msg.message_id}")
+                    try:
+                        await bot.delete_business_messages(
+                            business_connection_id=user_state.business_connection_id,
+                            chat_id=chat_id,
+                            message_ids=[msg.message_id],
+                        )
+                    except Exception:
+                        pass
+                    user_state.checklist_message_id = final_check_state.checklist_message_id
+                    save_user_state(chat_id, user_state)
+                    await update_checklist_for_user(bot, chat_id, user_state)
+                    return
+                user_state.checklist_message_id = msg.message_id
                 save_user_state(chat_id, user_state)
-                await update_checklist_for_user(bot, chat_id, user_state)
-                return
-            
-            # Проверка 2: финальная проверка после небольшой задержки (на случай если другой запрос только что сохранил)
-            # Перезагружаем состояние еще раз для финальной проверки
-            await asyncio.sleep(0.1)  # Небольшая задержка для синхронизации БД
-            very_fresh_state = load_user_state(chat_id)
-            if very_fresh_state and very_fresh_state.checklist_message_id is not None and very_fresh_state.checklist_message_id != msg.message_id:
-                logger.warning(
-                    f"⚠️ Чеклист был создан другим запросом (проверка 2: финальная), удаляю дубликат "
-                    f"message_id={msg.message_id} для chat_id={chat_id}. "
-                    f"Существующий: message_id={very_fresh_state.checklist_message_id}, title={checklist_title}"
-                )
-                try:
-                    await bot.delete_business_messages(
-                        business_connection_id=user_state.business_connection_id,
-                        chat_id=chat_id,
-                        message_ids=[msg.message_id],
-                    )
-                    logger.info(f"✅ Дубликат чеклиста удален (финальная проверка): message_id={msg.message_id}")
-                except Exception as e:
-                    logger.error(f"❌ Ошибка при удалении дубликата чеклиста: {e}", exc_info=True)
-                # Используем существующий чеклист
-                user_state.checklist_message_id = very_fresh_state.checklist_message_id
-                user_state.date = very_fresh_state.date
-                user_state.tasks = very_fresh_state.tasks
-                save_user_state(chat_id, user_state)
-                await update_checklist_for_user(bot, chat_id, user_state)
-                return
-            
-            # Сохраняем checklist_message_id только если дубликата нет
-            user_state.checklist_message_id = msg.message_id
-            # Явно обновляем состояние
-            save_user_state(chat_id, user_state)
-            logger.info(f"✅ Чеклист создан для chat_id={chat_id}, message_id={msg.message_id}, title='{checklist_title}'")
+                logger.info(f"✅ Чеклист создан (fallback) для chat_id={chat_id}, message_id={msg.message_id}, title='{checklist_title}'")
+            finally:
+                conn.close()
         except Exception as e:
             logger.error(f"❌ Ошибка при создании чеклиста для chat_id={chat_id}: {e}", exc_info=True)
             # Ничего не пробрасываем — просто логируем
