@@ -354,14 +354,19 @@ async def create_checklist_for_user(
                     except Exception as e:
                         logger.error(f"❌ Ошибка при удалении дубликата чеклиста: {e}", exc_info=True)
                     
-                    # Загружаем актуальное состояние
+                    # Загружаем актуальное состояние из БД
                     final_state = load_user_state(chat_id)
-                    if final_state:
+                    if final_state and final_state.checklist_message_id is not None and final_state.checklist_message_id != -1:
+                        # Оригинальный чеклист был сохранен другим запросом - используем его
+                        logger.info(f"✅ Используем оригинальный чеклист: message_id={final_state.checklist_message_id}")
                         user_state.checklist_message_id = final_state.checklist_message_id
                         user_state.date = final_state.date
                         user_state.tasks = final_state.tasks
                         save_user_state(chat_id, user_state)
-                        await update_checklist_for_user(bot, chat_id, user_state)
+                        # Не вызываем update_checklist_for_user, так как чеклист уже существует
+                    else:
+                        # Оригинальный чеклист не был сохранен - возможно, произошла ошибка
+                        logger.error(f"❌ Оригинальный чеклист не найден в БД после удаления дубликата для chat_id={chat_id}")
                     return
                 else:
                     # Успешно обновили - обновляем user_state в памяти
