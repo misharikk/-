@@ -181,6 +181,7 @@ async def create_checklist_for_user(
                 cursor.execute("BEGIN IMMEDIATE")
                 
                 # Проверяем, не был ли чеклист уже создан другим запросом
+                # ВАЖНО: проверяем как на реальный message_id (> 0), так и на маркер -1 (в процессе создания)
                 cursor.execute(
                     "SELECT checklist_message_id FROM user_state WHERE chat_id = ?",
                     (chat_id,)
@@ -188,17 +189,38 @@ async def create_checklist_for_user(
                 row = cursor.fetchone()
                 
                 if row and row[0] is not None:
-                    # Чеклист уже создан другим запросом - откатываем транзакцию и используем существующий
-                    conn.rollback()
-                    logger.info(f"⏭️ Чеклист уже существует (атомарная проверка ДО отправки), обновляю состояние для chat_id={chat_id}, message_id={row[0]}")
-                    fresh_user_state = load_user_state(chat_id)
-                    if fresh_user_state:
-                        user_state.checklist_message_id = fresh_user_state.checklist_message_id
-                        user_state.date = fresh_user_state.date
-                        user_state.tasks = fresh_user_state.tasks
-                        save_user_state(chat_id, user_state)
-                        await update_checklist_for_user(bot, chat_id, user_state)
-                    return
+                    existing_message_id = row[0]
+                    # Если это реальный message_id (не маркер -1), значит чеклист уже создан
+                    if existing_message_id != -1 and existing_message_id > 0:
+                        # Чеклист уже создан другим запросом - откатываем транзакцию и используем существующий
+                        conn.rollback()
+                        logger.info(f"⏭️ Чеклист уже существует (атомарная проверка ДО отправки), обновляю состояние для chat_id={chat_id}, message_id={existing_message_id}")
+                        fresh_user_state = load_user_state(chat_id)
+                        if fresh_user_state:
+                            user_state.checklist_message_id = fresh_user_state.checklist_message_id
+                            user_state.date = fresh_user_state.date
+                            user_state.tasks = fresh_user_state.tasks
+                            save_user_state(chat_id, user_state)
+                            await update_checklist_for_user(bot, chat_id, user_state)
+                        return
+                    elif existing_message_id == -1:
+                        # Маркер -1 означает, что другой запрос уже начал создание - ждем немного и проверяем снова
+                        conn.rollback()
+                        logger.info(f"⏭️ Другой запрос уже начал создание чеклиста (маркер -1), жду и проверяю снова для chat_id={chat_id}")
+                        await asyncio.sleep(0.2)  # Небольшая задержка
+                        # Проверяем еще раз
+                        fresh_user_state = load_user_state(chat_id)
+                        if fresh_user_state and fresh_user_state.checklist_message_id is not None and fresh_user_state.checklist_message_id != -1:
+                            # Чеклист был создан - используем его
+                            user_state.checklist_message_id = fresh_user_state.checklist_message_id
+                            user_state.date = fresh_user_state.date
+                            user_state.tasks = fresh_user_state.tasks
+                            save_user_state(chat_id, user_state)
+                            await update_checklist_for_user(bot, chat_id, user_state)
+                            return
+                        # Если все еще -1, значит другой запрос еще не закончил - выходим
+                        logger.warning(f"⚠️ Маркер -1 все еще установлен, другой запрос еще создает чеклист для chat_id={chat_id}, пропускаю")
+                        return
                 
                 # Устанавливаем временный маркер, чтобы другие запросы знали, что чеклист создается
                 # Используем специальное значение -1 как маркер "в процессе создания"
