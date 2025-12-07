@@ -145,10 +145,24 @@ async def create_checklist_for_user(
             return
         
         # 5. Если чеклиста ещё нет — создаём новый
+        # ВАЖНО: перезагружаем состояние перед созданием, чтобы избежать дублирования при конкурентных запросах
         # Обновляем дату только если она изменилась или не была установлена
         if user_state.date != current_user_date:
             user_state.date = current_user_date
             save_user_state(chat_id, user_state)
+        
+        # Перезагружаем состояние из БД перед созданием, чтобы убедиться, что чеклист не был создан другим запросом
+        from state import load_user_state
+        fresh_user_state = load_user_state(chat_id)
+        if fresh_user_state and fresh_user_state.checklist_message_id is not None:
+            # Чеклист был создан другим запросом - используем его
+            logger.info(f"⏭️ Чеклист уже существует (создан другим запросом), обновляю состояние для chat_id={chat_id}, message_id={fresh_user_state.checklist_message_id}")
+            user_state.checklist_message_id = fresh_user_state.checklist_message_id
+            user_state.date = fresh_user_state.date
+            user_state.tasks = fresh_user_state.tasks
+            save_user_state(chat_id, user_state)
+            await update_checklist_for_user(bot, chat_id, user_state)
+            return
 
         logger.info(f"🔨 Начинаю создание чеклиста для chat_id={chat_id}")
         
@@ -202,6 +216,27 @@ async def create_checklist_for_user(
             chat_id=chat_id,
             checklist=checklist,
         )
+        
+        # ПЕРЕД сохранением - ещё раз проверяем, не был ли создан чеклист другим запросом
+        final_check_state = load_user_state(chat_id)
+        if final_check_state and final_check_state.checklist_message_id is not None:
+            logger.warning(f"⚠️ Чеклист был создан другим запросом во время создания, удаляю дубликат message_id={msg.message_id} для chat_id={chat_id}")
+            try:
+                await bot.delete_business_messages(
+                    business_connection_id=user_state.business_connection_id,
+                    chat_id=chat_id,
+                    message_ids=[msg.message_id],
+                )
+            except Exception as e:
+                logger.error(f"❌ Ошибка при удалении дубликата чеклиста: {e}")
+            # Используем существующий чеклист
+            user_state.checklist_message_id = final_check_state.checklist_message_id
+            user_state.date = final_check_state.date
+            user_state.tasks = final_check_state.tasks
+            save_user_state(chat_id, user_state)
+            await update_checklist_for_user(bot, chat_id, user_state)
+            return
+        
         user_state.checklist_message_id = msg.message_id
         # Явно обновляем состояние
         save_user_state(chat_id, user_state)
@@ -352,58 +387,159 @@ async def add_task_to_tag_checklist(
                     return
         
         # Если чеклиста нет или он был удален - создаём новый
+        # ВАЖНО: перезагружаем состояние перед созданием, чтобы избежать дублирования при конкурентных запросах
         if tag not in user_state.tag_checklists:
-            # Вычисляем next_id для новой задачи
-            # Используем максимальный item_id из существующих задач для этого тега
-            # Если задач нет (первый чеклист для тега), item_id будет 1
-            # ВАЖНО: даже если tag_state был удалён из tag_checklists, 
-            # нужно проверить, есть ли задачи для этого тега в состоянии
-            # Но так как tag not in user_state.tag_checklists, значит задач нет
-            # Однако для корректной нумерации при последующих созданиях чеклиста
-            # используем максимальный item_id из всех задач всех теговых чеклистов
-            # чтобы избежать конфликтов item_id между разными тегами
-            all_tag_task_ids = []
-            for existing_tag, existing_tag_state in user_state.tag_checklists.items():
-                all_tag_task_ids.extend([t.item_id for t in existing_tag_state.tasks])
+            # Перезагружаем состояние из БД перед созданием, чтобы убедиться, что чеклист не был создан другим запросом
+            from state import load_user_state
+            fresh_user_state = load_user_state(chat_id)
+            if fresh_user_state and tag in fresh_user_state.tag_checklists:
+                # Чеклист был создан другим запросом - используем его
+                logger.info(f"⏭️ Чеклист по тегу '{tag}' уже существует (создан другим запросом), обновляю состояние для chat_id={chat_id}")
+                user_state.tag_checklists[tag] = fresh_user_state.tag_checklists[tag]
+                # Продолжаем с обновлением существующего чеклиста
+                tag_state = user_state.tag_checklists[tag]
+                next_id = max([t.item_id for t in tag_state.tasks], default=0) + 1
+                tag_state.tasks.append(TaskItem(item_id=next_id, text=task_text, done=False))
+                save_user_state(chat_id, user_state)
+                # Обновляем чеклист (код ниже)
+            else:
+                # Чеклиста действительно нет - создаём новый
+                # Вычисляем next_id для новой задачи
+                # Используем максимальный item_id из существующих задач для этого тега
+                # Если задач нет (первый чеклист для тега), item_id будет 1
+                # ВАЖНО: даже если tag_state был удалён из tag_checklists, 
+                # нужно проверить, есть ли задачи для этого тега в состоянии
+                # Но так как tag not in user_state.tag_checklists, значит задач нет
+                # Однако для корректной нумерации при последующих созданиях чеклиста
+                # используем максимальный item_id из всех задач всех теговых чеклистов
+                # чтобы избежать конфликтов item_id между разными тегами
+                all_tag_task_ids = []
+                current_state = fresh_user_state if fresh_user_state else user_state
+                for existing_tag, existing_tag_state in current_state.tag_checklists.items():
+                    all_tag_task_ids.extend([t.item_id for t in existing_tag_state.tasks])
+                
+                # Вычисляем next_id как максимальный + 1, или 1 если задач нет
+                next_id = max(all_tag_task_ids, default=0) + 1
+                logger.debug(f"🔢 Вычислен next_id={next_id} для нового тегового чеклиста '{tag}' (максимальный item_id в существующих теговых чеклистах: {max(all_tag_task_ids, default=0)})")
+                
+                # Формируем первую задачу
+                first_task_text = task_text
+                if len(first_task_text) > 100:
+                    first_task_text = first_task_text[:97].rstrip() + "…"
+                
+                tasks = [InputChecklistTask(
+                    id=next_id,
+                    text=first_task_text,
+                )]
+                
+                checklist = InputChecklist(
+                    title=tag,
+                    tasks=tasks,
+                    others_can_add_tasks=False,
+                    others_can_mark_tasks_as_done=True,
+                )
+                
+                logger.info(f"📤 Создаю чеклист по тегу '{tag}' для chat_id={chat_id}")
+                msg = await bot.send_checklist(
+                    business_connection_id=user_state.business_connection_id,
+                    chat_id=chat_id,
+                    checklist=checklist,
+                )
+                
+                # ПЕРЕД сохранением - ещё раз проверяем, не был ли создан чеклист другим запросом
+                final_check_state = load_user_state(chat_id)
+                if final_check_state and tag in final_check_state.tag_checklists:
+                    logger.warning(f"⚠️ Чеклист по тегу '{tag}' был создан другим запросом во время создания, удаляю дубликат message_id={msg.message_id} для chat_id={chat_id}")
+                    try:
+                        await bot.delete_business_messages(
+                            business_connection_id=user_state.business_connection_id,
+                            chat_id=chat_id,
+                            message_ids=[msg.message_id],
+                        )
+                    except Exception as e:
+                        logger.error(f"❌ Ошибка при удалении дубликата чеклиста: {e}")
+                    # Используем существующий чеклист
+                    user_state.tag_checklists[tag] = final_check_state.tag_checklists[tag]
+                    # Добавляем задачу в существующий чеклист
+                    tag_state = user_state.tag_checklists[tag]
+                    next_id = max([t.item_id for t in tag_state.tasks], default=0) + 1
+                    tag_state.tasks.append(TaskItem(item_id=next_id, text=task_text, done=False))
+                    save_user_state(chat_id, user_state)
+                    # Обновляем чеклист (код ниже)
+                else:
+                    # Сохраняем состояние чеклиста
+                    tag_state = TagChecklistState(
+                        title=tag,
+                        checklist_message_id=msg.message_id,
+                        tasks=[TaskItem(item_id=next_id, text=task_text, done=False)],
+                    )
+                    user_state.tag_checklists[tag] = tag_state
+                    save_user_state(chat_id, user_state)
+                    
+                    logger.info(f"✅ Чеклист по тегу '{tag}' создан для chat_id={chat_id}, message_id={msg.message_id}, item_id={next_id}")
+                    return  # Выходим, так как чеклист создан и задача добавлена
+        
+        # Если мы дошли сюда, значит чеклист существует - обновляем его
+        if tag in user_state.tag_checklists:
+            tag_state = user_state.tag_checklists[tag]
             
-            # Вычисляем next_id как максимальный + 1, или 1 если задач нет
-            next_id = max(all_tag_task_ids, default=0) + 1
-            logger.debug(f"🔢 Вычислен next_id={next_id} для нового тегового чеклиста '{tag}' (максимальный item_id в существующих теговых чеклистах: {max(all_tag_task_ids, default=0)})")
+            # Проверяем, не была ли задача уже добавлена (защита от дублирования)
+            task_already_exists = any(t.text == task_text for t in tag_state.tasks)
+            if not task_already_exists:
+                # Добавляем задачу в список как TaskItem
+                next_id = max([t.item_id for t in tag_state.tasks], default=0) + 1
+                tag_state.tasks.append(TaskItem(item_id=next_id, text=task_text, done=False))
+                save_user_state(chat_id, user_state)
             
-            # Формируем первую задачу
-            first_task_text = task_text
-            if len(first_task_text) > 100:
-                first_task_text = first_task_text[:97].rstrip() + "…"
-            
-            tasks = [InputChecklistTask(
-                id=next_id,
-                text=first_task_text,
-            )]
+            # Формируем список задач без нумерации
+            # ВАЖНО: пропускаем выполненные задачи и используем позицию (1-based) для синхронизации
+            tasks = []
+            task_position = 0  # Позиция в чеклисте (1-based)
+            for task_item in tag_state.tasks:
+                # Пропускаем выполненные задачи
+                if task_item.done:
+                    logger.debug(f"⏭️ ПРОПУСКАЕМ выполненную задачу в теговом чеклисте '{tag}': '{task_item.text[:50]}' (item_id={task_item.item_id}, done={task_item.done})")
+                    continue
+                
+                task_position += 1  # Увеличиваем позицию только для невыполненных задач
+                task_text_for_checklist = task_item.text
+                # Обрезаем до 100 символов (лимит Telegram API для чеклистов)
+                if len(task_text_for_checklist) > 100:
+                    task_text_for_checklist = task_text_for_checklist[:97].rstrip() + "…"
+                # ВАЖНО: id в чеклисте должен быть item_id из состояния, а не позицией
+                # Это нужно для правильной синхронизации событий - marked_as_done_task_ids содержат item_id
+                tasks.append(InputChecklistTask(
+                    id=task_item.item_id,  # Используем item_id из состояния для синхронизации
+                    text=task_text_for_checklist,
+                ))
             
             checklist = InputChecklist(
-                title=tag,
+                title=tag_state.title,
                 tasks=tasks,
                 others_can_add_tasks=False,
                 others_can_mark_tasks_as_done=True,
             )
             
-            logger.info(f"📤 Создаю чеклист по тегу '{tag}' для chat_id={chat_id}")
-            msg = await bot.send_checklist(
-                business_connection_id=user_state.business_connection_id,
-                chat_id=chat_id,
-                checklist=checklist,
-            )
-            
-            # Сохраняем состояние чеклиста
-            tag_state = TagChecklistState(
-                title=tag,
-                checklist_message_id=msg.message_id,
-                tasks=[TaskItem(item_id=next_id, text=task_text, done=False)],
-            )
-            user_state.tag_checklists[tag] = tag_state
-            save_user_state(chat_id, user_state)
-            
-            logger.info(f"✅ Чеклист по тегу '{tag}' создан для chat_id={chat_id}, message_id={msg.message_id}, item_id={next_id}")
+            try:
+                await bot.edit_message_checklist(
+                    business_connection_id=user_state.business_connection_id,
+                    chat_id=chat_id,
+                    message_id=tag_state.checklist_message_id,
+                    checklist=checklist,
+                )
+                logger.info(f"✅ Задача добавлена в чеклист по тегу '{tag}' для chat_id={chat_id}: {task_text!r}")
+            except Exception as e:
+                error_msg = str(e)
+                # Если чеклист не найден (удален или неверный message_id), создаём новый
+                if "Message_id_invalid" in error_msg or "message not found" in error_msg.lower():
+                    logger.warning(f"⚠️ Чеклист по тегу '{tag}' message_id={tag_state.checklist_message_id} не найден, создаю новый для chat_id={chat_id}")
+                    # Удаляем старый чеклист из состояния и создадим новый ниже
+                    del user_state.tag_checklists[tag]
+                    # Рекурсивно вызываем функцию для создания нового чеклиста
+                    await add_task_to_tag_checklist(bot, chat_id, user_state, tag, task_text)
+                else:
+                    logger.error(f"❌ Ошибка при обновлении чеклиста по тегу '{tag}' для chat_id={chat_id}: {e}", exc_info=True)
+                    return
     except Exception as e:
         logger.error(f"❌ Ошибка при добавлении задачи в чеклист по тегу '{tag}' для chat_id={chat_id}: {e}", exc_info=True)
         # Ничего не пробрасываем — просто логируем

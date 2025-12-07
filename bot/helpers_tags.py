@@ -21,10 +21,11 @@ def build_tags_keyboard(user_state: UserState) -> InlineKeyboardMarkup:
     До 3 тегов на странице, с кнопками навигации.
     В начале добавляет кнопку с названием дневного отчета (например, "#7дек_вс").
     Всегда включает кнопку "Удалить" внизу.
-    Если история тегов пустая - показывает только кнопку удаления.
-    """
-    tags = user_state.tags_history
     
+    Показывает:
+    1. Все активные теги из tag_checklists (чеклисты, которые существуют)
+    2. Теги из tags_history, которых нет в tag_checklists (для истории)
+    """
     buttons = []
     
     # Добавляем кнопку с названием дневного отчета в начало
@@ -35,23 +36,32 @@ def build_tags_keyboard(user_state: UserState) -> InlineKeyboardMarkup:
     except Exception as e:
         logger.error(f"❌ Ошибка при создании кнопки дневного отчета: {e}", exc_info=True)
     
-    # Если история тегов не пустая - показываем теги
-    if tags:
+    # Формируем объединенный список тегов:
+    # 1. Сначала все активные теги из tag_checklists (чеклисты, которые существуют)
+    # 2. Затем теги из tags_history, которых нет в tag_checklists
+    active_tags = list(user_state.tag_checklists.keys())  # Активные чеклисты
+    history_tags = [tag for tag in user_state.tags_history if tag not in active_tags]  # История без активных
+    
+    # Объединяем: сначала активные, потом история
+    all_tags = active_tags + history_tags
+    
+    # Если есть теги - показываем их с пагинацией
+    if all_tags:
         page = user_state.tags_page_index
-        total_pages = (len(tags) + TAGS_PER_PAGE - 1) // TAGS_PER_PAGE if tags else 0
+        total_pages = (len(all_tags) + TAGS_PER_PAGE - 1) // TAGS_PER_PAGE if all_tags else 0
         
         # Кнопки с тегами для текущей страницы
         start_idx = page * TAGS_PER_PAGE
-        end_idx = min(start_idx + TAGS_PER_PAGE, len(tags))
+        end_idx = min(start_idx + TAGS_PER_PAGE, len(all_tags))
         
-        for tag in tags[start_idx:end_idx]:
+        for tag in all_tags[start_idx:end_idx]:
             buttons.append([InlineKeyboardButton(tag, callback_data=f"TAG_SELECT:{tag}")])
         
         # Кнопки навигации
         nav_row = []
         if page > 0:
             nav_row.append(InlineKeyboardButton("⬅️", callback_data="TAGS_PAGE_PREV"))
-        if end_idx < len(tags):
+        if end_idx < len(all_tags):
             nav_row.append(InlineKeyboardButton("➡️", callback_data="TAGS_PAGE_NEXT"))
         
         if nav_row:
@@ -68,7 +78,12 @@ def build_tags_keyboard(user_state: UserState) -> InlineKeyboardMarkup:
 
 async def on_tags_page_next(update: Update, context: ContextTypes.DEFAULT_TYPE, user_state: UserState, chat_id: int) -> None:
     """Обработка кнопки 'Вперёд' в пагинации тегов"""
-    total_pages = (len(user_state.tags_history) + TAGS_PER_PAGE - 1) // TAGS_PER_PAGE if user_state.tags_history else 0
+    # Формируем объединенный список тегов (как в build_tags_keyboard)
+    active_tags = list(user_state.tag_checklists.keys())
+    history_tags = [tag for tag in user_state.tags_history if tag not in active_tags]
+    all_tags = active_tags + history_tags
+    
+    total_pages = (len(all_tags) + TAGS_PER_PAGE - 1) // TAGS_PER_PAGE if all_tags else 0
     if user_state.tags_page_index + 1 < total_pages:
         user_state.tags_page_index += 1
         save_user_state(chat_id, user_state)
@@ -97,3 +112,4 @@ async def on_tags_page_prev(update: Update, context: ContextTypes.DEFAULT_TYPE, 
                 )
             except Exception as e:
                 logger.error(f"❌ Ошибка при обновлении клавиатуры тегов: {e}", exc_info=True)
+
