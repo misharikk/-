@@ -3,6 +3,7 @@
 """
 
 import logging
+import asyncio
 from datetime import datetime
 from typing import Optional, Tuple
 from telegram import InputChecklist, InputChecklistTask
@@ -12,6 +13,10 @@ from state import UserState, TagChecklistState, TaskItem, save_user_state
 from helpers_text import get_user_local_date
 
 logger = logging.getLogger(__name__)
+
+# Блокировки для предотвращения одновременного создания чеклистов для одного пользователя
+# Ключ: chat_id, значение: asyncio.Lock
+_checklist_creation_locks: dict[int, asyncio.Lock] = {}
 
 # Глобальный set для отслеживания обработанных событий чеклиста (защита от дубликатов)
 # Ключ: (target_checklist_type, tuple(marked_as_done_ids), tuple(marked_as_undone_ids))
@@ -97,161 +102,174 @@ async def create_checklist_for_user(
     - others_can_add_tasks = False
     - others_can_mark_tasks_as_done = True
     - сохраняет checklist_message_id, дату и список tasks в user_state
+    
+    ВАЖНО: Использует блокировку для предотвращения одновременного создания чеклистов.
     """
-    try:
-        # 1. Сохраняем старую дату ДО пересчёта
-        old_date = user_state.date
-        
-        # 2. Определяем дату для чеклиста
-        # ПРАВИЛО:
-        # - Если чеклиста нет (checklist_message_id is None) и дата уже установлена - используем её
-        #   (например, при создании нового дня в start_new_day_for_user)
-        # - Если чеклиста нет и дата отсутствует - вычисляем через get_user_local_date
-        # - Если чеклист существует - проверяем, не изменилась ли дата через get_user_local_date
-        if user_state.checklist_message_id is None:
-            # Создаём новый чеклист
-            if user_state.date:
-                # Дата уже установлена (например, из start_new_day_for_user) - используем её
-                current_user_date = user_state.date
-                logger.debug(f"📅 Используем установленную дату для нового чеклиста: {current_user_date}")
+    # Получаем или создаем блокировку для этого пользователя
+    if chat_id not in _checklist_creation_locks:
+        _checklist_creation_locks[chat_id] = asyncio.Lock()
+    
+    lock = _checklist_creation_locks[chat_id]
+    
+    # Используем блокировку для предотвращения одновременного создания
+    async with lock:
+        try:
+            # 1. Сохраняем старую дату ДО пересчёта
+            old_date = user_state.date
+            
+            # 2. Определяем дату для чеклиста
+            # ПРАВИЛО:
+            # - Если чеклиста нет (checklist_message_id is None) и дата уже установлена - используем её
+            #   (например, при создании нового дня в start_new_day_for_user)
+            # - Если чеклиста нет и дата отсутствует - вычисляем через get_user_local_date
+            # - Если чеклист существует - проверяем, не изменилась ли дата через get_user_local_date
+            if user_state.checklist_message_id is None:
+                # Создаём новый чеклист
+                if user_state.date:
+                    # Дата уже установлена (например, из start_new_day_for_user) - используем её
+                    current_user_date = user_state.date
+                    logger.debug(f"📅 Используем установленную дату для нового чеклиста: {current_user_date}")
+                else:
+                    # Дата не установлена - вычисляем актуальную локальную дату пользователя
+                    current_user_date = get_user_local_date(user_state)
+                    logger.debug(f"📅 Вычислена дата для нового чеклиста: {current_user_date}")
             else:
-                # Дата не установлена - вычисляем актуальную локальную дату пользователя
+                # Обновляем существующий чеклист - проверяем, не изменилась ли дата
                 current_user_date = get_user_local_date(user_state)
-                logger.debug(f"📅 Вычислена дата для нового чеклиста: {current_user_date}")
-        else:
-            # Обновляем существующий чеклист - проверяем, не изменилась ли дата
-            current_user_date = get_user_local_date(user_state)
-        
-        # 3. Формируем title в формате #4дек_чт
-        checklist_title = get_checklist_title_from_date(current_user_date)
-        
-        # 4. Если чеклист уже существует — проверяем, не изменилась ли дата
-        if user_state.checklist_message_id is not None:
-            if old_date and old_date != current_user_date:
-                logger.info(
-                    f"🔄 Дата изменилась для chat_id={chat_id}: "
-                    f"{old_date} → {current_user_date}, обновляю чеклист"
-                )
+            
+            # 3. Формируем title в формате #4дек_чт
+            checklist_title = get_checklist_title_from_date(current_user_date)
+            
+            # 4. Если чеклист уже существует — проверяем, не изменилась ли дата
+            if user_state.checklist_message_id is not None:
+                if old_date and old_date != current_user_date:
+                    logger.info(
+                        f"🔄 Дата изменилась для chat_id={chat_id}: "
+                        f"{old_date} → {current_user_date}, обновляю чеклист"
+                    )
+                    user_state.date = current_user_date
+                    save_user_state(chat_id, user_state)
+                    await update_checklist_for_user(bot, chat_id, user_state)
+                    return
+                else:
+                    logger.info(
+                        f"⏭️ Чеклист уже существует для chat_id={chat_id}, "
+                        f"message_id={user_state.checklist_message_id}, "
+                        f"дата актуальна ({current_user_date})"
+                    )
+                return
+            
+            # 5. Если чеклиста ещё нет — создаём новый
+            # ВАЖНО: перезагружаем состояние перед созданием, чтобы избежать дублирования при конкурентных запросах
+            # Обновляем дату только если она изменилась или не была установлена
+            if user_state.date != current_user_date:
                 user_state.date = current_user_date
+                save_user_state(chat_id, user_state)
+            
+            # Перезагружаем состояние из БД перед созданием, чтобы убедиться, что чеклист не был создан другим запросом
+            from state import load_user_state
+            fresh_user_state = load_user_state(chat_id)
+            if fresh_user_state and fresh_user_state.checklist_message_id is not None:
+                # Чеклист был создан другим запросом - используем его
+                logger.info(f"⏭️ Чеклист уже существует (создан другим запросом), обновляю состояние для chat_id={chat_id}, message_id={fresh_user_state.checklist_message_id}")
+                user_state.checklist_message_id = fresh_user_state.checklist_message_id
+                user_state.date = fresh_user_state.date
+                user_state.tasks = fresh_user_state.tasks
                 save_user_state(chat_id, user_state)
                 await update_checklist_for_user(bot, chat_id, user_state)
                 return
-            else:
-                logger.info(
-                    f"⏭️ Чеклист уже существует для chat_id={chat_id}, "
-                    f"message_id={user_state.checklist_message_id}, "
-                    f"дата актуальна ({current_user_date})"
-                )
-            return
-        
-        # 5. Если чеклиста ещё нет — создаём новый
-        # ВАЖНО: перезагружаем состояние перед созданием, чтобы избежать дублирования при конкурентных запросах
-        # Обновляем дату только если она изменилась или не была установлена
-        if user_state.date != current_user_date:
-            user_state.date = current_user_date
-            save_user_state(chat_id, user_state)
-        
-        # Перезагружаем состояние из БД перед созданием, чтобы убедиться, что чеклист не был создан другим запросом
-        from state import load_user_state
-        fresh_user_state = load_user_state(chat_id)
-        if fresh_user_state and fresh_user_state.checklist_message_id is not None:
-            # Чеклист был создан другим запросом - используем его
-            logger.info(f"⏭️ Чеклист уже существует (создан другим запросом), обновляю состояние для chat_id={chat_id}, message_id={fresh_user_state.checklist_message_id}")
-            user_state.checklist_message_id = fresh_user_state.checklist_message_id
-            user_state.date = fresh_user_state.date
-            user_state.tasks = fresh_user_state.tasks
-            save_user_state(chat_id, user_state)
-            await update_checklist_for_user(bot, chat_id, user_state)
-            return
 
-        logger.info(f"🔨 Начинаю создание чеклиста для chat_id={chat_id}")
-        
-        # Если задач нет, создаем автоматическую задачу
-        if not user_state.tasks:
-            first_task_text = "улыбнуться себе в зеркало"
-            user_state.tasks = [TaskItem(item_id=1, text=first_task_text, done=False)]
-            save_user_state(chat_id, user_state)
-
-        tasks = []
-        total_tasks = len(user_state.tasks)
-        done_count = sum(1 for t in user_state.tasks if t.done)
-        logger.info(f"📊 Создание чеклиста: всего задач={total_tasks}, выполненных={done_count}, невыполненных={total_tasks - done_count}")
-        
-        task_position = 0  # Позиция в чеклисте (1-based)
-        for task_item in user_state.tasks:
-            # Пропускаем выполненные задачи при создании нового чеклиста
-            if task_item.done:
-                logger.warning(f"⏭️ ПРОПУСКАЕМ выполненную задачу при создании чеклиста: '{task_item.text[:50]}' (item_id={task_item.item_id}, done={task_item.done})")
-                continue
+            logger.info(f"🔨 Начинаю создание чеклиста для chat_id={chat_id}")
             
-            task_position += 1  # Увеличиваем позицию только для невыполненных задач
-            # Формируем текст без номера
-            task_text = task_item.text
-            # Обрезаем до 100 символов (лимит Telegram API для чеклистов)
-            if len(task_text) > 100:
-                task_text = task_text[:97].rstrip() + "…"
+            # Если задач нет, создаем автоматическую задачу
+            if not user_state.tasks:
+                first_task_text = "улыбнуться себе в зеркало"
+                user_state.tasks = [TaskItem(item_id=1, text=first_task_text, done=False)]
+                save_user_state(chat_id, user_state)
+
+            tasks = []
+            total_tasks = len(user_state.tasks)
+            done_count = sum(1 for t in user_state.tasks if t.done)
+            logger.info(f"📊 Создание чеклиста: всего задач={total_tasks}, выполненных={done_count}, невыполненных={total_tasks - done_count}")
             
-            # ВАЖНО: id в чеклисте должен быть item_id из состояния, а не позицией
-            # Это нужно для правильной синхронизации событий - marked_as_done_task_ids содержат item_id
-            tasks.append(InputChecklistTask(
-                id=task_item.item_id,  # Используем item_id из состояния для синхронизации
-                text=task_text,
-            ))
+            task_position = 0  # Позиция в чеклисте (1-based)
+            for task_item in user_state.tasks:
+                # Пропускаем выполненные задачи при создании нового чеклиста
+                if task_item.done:
+                    logger.warning(f"⏭️ ПРОПУСКАЕМ выполненную задачу при создании чеклиста: '{task_item.text[:50]}' (item_id={task_item.item_id}, done={task_item.done})")
+                    continue
+                
+                task_position += 1  # Увеличиваем позицию только для невыполненных задач
+                # Формируем текст без номера
+                task_text = task_item.text
+                # Обрезаем до 100 символов (лимит Telegram API для чеклистов)
+                if len(task_text) > 100:
+                    task_text = task_text[:97].rstrip() + "…"
+                
+                # ВАЖНО: id в чеклисте должен быть item_id из состояния, а не позицией
+                # Это нужно для правильной синхронизации событий - marked_as_done_task_ids содержат item_id
+                tasks.append(InputChecklistTask(
+                    id=task_item.item_id,  # Используем item_id из состояния для синхронизации
+                    text=task_text,
+                ))
 
-        # Если нет невыполненных задач - не создаем чеклист
-        if not tasks:
-            logger.info(f"⏭️ Нет невыполненных задач для создания чеклиста для chat_id={chat_id}, пропускаем")
-            return
+            # Если нет невыполненных задач - не создаем чеклист
+            if not tasks:
+                logger.info(f"⏭️ Нет невыполненных задач для создания чеклиста для chat_id={chat_id}, пропускаем")
+                return
 
-        checklist = InputChecklist(
-            title=checklist_title,
-            tasks=tasks,
-            others_can_add_tasks=False,
-            others_can_mark_tasks_as_done=True,
-        )
-
-        logger.info(f"📤 Отправляю чеклист для chat_id={chat_id}, title='{checklist_title}', задач={len(tasks)}")
-        msg = await bot.send_checklist(
-            business_connection_id=user_state.business_connection_id,
-            chat_id=chat_id,
-            checklist=checklist,
-        )
-        
-        # ПЕРЕД сохранением - ещё раз проверяем, не был ли создан чеклист другим запросом
-        # ВАЖНО: проверяем ДО сохранения checklist_message_id, чтобы избежать гонки
-        final_check_state = load_user_state(chat_id)
-        if final_check_state and final_check_state.checklist_message_id is not None and final_check_state.checklist_message_id != msg.message_id:
-            # Чеклист был создан другим запросом - удаляем наш дубликат
-            logger.warning(
-                f"⚠️ Чеклист был создан другим запросом во время создания, удаляю дубликат "
-                f"message_id={msg.message_id} для chat_id={chat_id}. "
-                f"Существующий чеклист: message_id={final_check_state.checklist_message_id}"
+            checklist = InputChecklist(
+                title=checklist_title,
+                tasks=tasks,
+                others_can_add_tasks=False,
+                others_can_mark_tasks_as_done=True,
             )
-            try:
-                await bot.delete_business_messages(
-                    business_connection_id=user_state.business_connection_id,
-                    chat_id=chat_id,
-                    message_ids=[msg.message_id],
+
+            logger.info(f"📤 Отправляю чеклист для chat_id={chat_id}, title='{checklist_title}', задач={len(tasks)}")
+            msg = await bot.send_checklist(
+                business_connection_id=user_state.business_connection_id,
+                chat_id=chat_id,
+                checklist=checklist,
+            )
+            
+            # ПЕРЕД сохранением - ещё раз проверяем, не был ли создан чеклист другим запросом
+            # ВАЖНО: проверяем ДО сохранения checklist_message_id, чтобы избежать гонки
+            final_check_state = load_user_state(chat_id)
+            if final_check_state and final_check_state.checklist_message_id is not None and final_check_state.checklist_message_id != msg.message_id:
+                # Чеклист был создан другим запросом - удаляем наш дубликат
+                logger.warning(
+                    f"⚠️ Чеклист был создан другим запросом во время создания, удаляю дубликат "
+                    f"message_id={msg.message_id} для chat_id={chat_id}. "
+                    f"Существующий чеклист: message_id={final_check_state.checklist_message_id}"
                 )
-                logger.info(f"✅ Дубликат чеклиста удален: message_id={msg.message_id}")
-            except Exception as e:
-                logger.error(f"❌ Ошибка при удалении дубликата чеклиста: {e}", exc_info=True)
-            # Используем существующий чеклист
-            user_state.checklist_message_id = final_check_state.checklist_message_id
-            user_state.date = final_check_state.date
-            user_state.tasks = final_check_state.tasks
+                try:
+                    await bot.delete_business_messages(
+                        business_connection_id=user_state.business_connection_id,
+                        chat_id=chat_id,
+                        message_ids=[msg.message_id],
+                    )
+                    logger.info(f"✅ Дубликат чеклиста удален: message_id={msg.message_id}")
+                except Exception as e:
+                    logger.error(f"❌ Ошибка при удалении дубликата чеклиста: {e}", exc_info=True)
+                # Используем существующий чеклист
+                user_state.checklist_message_id = final_check_state.checklist_message_id
+                user_state.date = final_check_state.date
+                user_state.tasks = final_check_state.tasks
+                save_user_state(chat_id, user_state)
+                await update_checklist_for_user(bot, chat_id, user_state)
+                return
+            
+            # Сохраняем checklist_message_id только если дубликата нет
+            user_state.checklist_message_id = msg.message_id
+            # Явно обновляем состояние
             save_user_state(chat_id, user_state)
-            await update_checklist_for_user(bot, chat_id, user_state)
-            return
-        
-        # Сохраняем checklist_message_id только если дубликата нет
-        user_state.checklist_message_id = msg.message_id
-        # Явно обновляем состояние
-        save_user_state(chat_id, user_state)
-        logger.info(f"✅ Чеклист создан для chat_id={chat_id}, message_id={msg.message_id}, title='{checklist_title}'")
-    except Exception as e:
-        logger.error(f"❌ Ошибка при создании чеклиста для chat_id={chat_id}: {e}", exc_info=True)
-        # Ничего не пробрасываем — просто логируем
+            logger.info(f"✅ Чеклист создан для chat_id={chat_id}, message_id={msg.message_id}, title='{checklist_title}'")
+        except Exception as e:
+            logger.error(f"❌ Ошибка при создании чеклиста для chat_id={chat_id}: {e}", exc_info=True)
+            # Ничего не пробрасываем — просто логируем
+        except Exception as e:
+            logger.error(f"❌ Ошибка при создании чеклиста для chat_id={chat_id}: {e}", exc_info=True)
+            # Ничего не пробрасываем — просто логируем
 
 
 async def update_checklist_for_user(
