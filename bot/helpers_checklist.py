@@ -355,6 +355,8 @@ async def create_checklist_for_user(
                         logger.error(f"❌ Ошибка при удалении дубликата чеклиста: {e}", exc_info=True)
                     
                     # Загружаем актуальное состояние из БД
+                    # ВАЖНО: даем время другому запросу завершить сохранение
+                    await asyncio.sleep(0.3)  # Небольшая задержка для завершения транзакции другого запроса
                     final_state = load_user_state(chat_id)
                     if final_state and final_state.checklist_message_id is not None and final_state.checklist_message_id != -1:
                         # Оригинальный чеклист был сохранен другим запросом - используем его
@@ -365,8 +367,18 @@ async def create_checklist_for_user(
                         save_user_state(chat_id, user_state)
                         # Не вызываем update_checklist_for_user, так как чеклист уже существует
                     else:
-                        # Оригинальный чеклист не был сохранен - возможно, произошла ошибка
-                        logger.error(f"❌ Оригинальный чеклист не найден в БД после удаления дубликата для chat_id={chat_id}")
+                        # Если все еще не найден - пробуем еще раз через небольшую задержку
+                        await asyncio.sleep(0.2)
+                        final_state_retry = load_user_state(chat_id)
+                        if final_state_retry and final_state_retry.checklist_message_id is not None and final_state_retry.checklist_message_id != -1:
+                            logger.info(f"✅ Используем оригинальный чеклист (повторная проверка): message_id={final_state_retry.checklist_message_id}")
+                            user_state.checklist_message_id = final_state_retry.checklist_message_id
+                            user_state.date = final_state_retry.date
+                            user_state.tasks = final_state_retry.tasks
+                            save_user_state(chat_id, user_state)
+                        else:
+                            # Оригинальный чеклист не был сохранен - возможно, произошла ошибка
+                            logger.error(f"❌ Оригинальный чеклист не найден в БД после удаления дубликата для chat_id={chat_id}")
                     return
                 else:
                     # Успешно обновили - обновляем user_state в памяти
